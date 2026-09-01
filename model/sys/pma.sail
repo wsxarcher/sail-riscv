@@ -210,6 +210,9 @@ function pma_misaligned_exception(pma : PMA, access : MemoryAccessType(mem_paylo
     StoreConditional(_, _, p) => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned store-conditional (" ^ mem_payload_name(p) ^ ")."),
     Load(ShadowStack)         => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned shadow-stack load."),
     Store(ShadowStack)        => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned shadow-stack store."),
+    // Zimt tag table accesses are single bytes and cannot be misaligned.
+    Load(Tag)                 => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned tag load."),
+    Store(Tag)                => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned tag store."),
     CacheAccess(_)            => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned cache-access."),
     LoadExecute(p)            => internal_error(__FILE__, __LINE__, "PMA: Invalid misaligned load-execute (" ^ mem_payload_name(p) ^ ")."),
   }
@@ -233,6 +236,9 @@ private function is_mag_applicable_access(access : MemoryAccessType(mem_payload)
     // Not in the base ISA.
     Load(ShadowStack)                   => false,
     Store(ShadowStack)                  => false,
+    // Zimt tag table accesses are single bytes and never misaligned.
+    Load(Tag)                           => false,
+    Store(Tag)                          => false,
     // Standard AMOs.
     Atomic(_, _, _, Data, Data)         => true,
     // Not applicable to Shadow Stack AMOs.
