@@ -892,6 +892,11 @@
     "Zimop": {
       "supported": true
     },
+    "Zimt": {
+      "supported": @CONFIG_XLEN_IS_64@,
+      "supported_pointer_tag_width_4": true,
+      "supported_pointer_tag_width_7": true
+    },
     "Zmmul": {
       "supported": false
     },
@@ -1281,6 +1286,12 @@
     },
     "Ssdbltrp": {
       "supported": false
+    },
+    "Svatag": {
+      "supported": @CONFIG_XLEN_IS_64@
+    },
+    "Smvatag": {
+      "supported": @CONFIG_XLEN_IS_64@
     },
     "Svbare": {
       "supported": true,
