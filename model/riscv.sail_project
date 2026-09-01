@@ -64,7 +64,7 @@ pmp {
 }
 
 sys {
-  requires prelude, core, exceptions, pmp, V_core, Smcntrpmf, Zicfilp_regs, A_types, Stateen, Zicbop_types, PM_types, PM_utils, Sdtrig
+  requires prelude, core, exceptions, pmp, V_core, Smcntrpmf, Zicfilp_regs, A_types, Stateen, Zicbop_types, PM_types, PM_utils, Sdtrig, CFI_types, Zimt_types, Zimt_regs
 
   files
     sys/sys_reservation.sail,
@@ -84,6 +84,7 @@ sys {
     sys/vmem.sail,
     sys/insts_begin.sail,
     sys/vmem_utils.sail,
+    sys/zimt_tag_ops.sail,
 }
 
 extensions {
@@ -592,6 +593,10 @@ extensions {
     Zimt_regs {
       requires core, Zimt_types, Stateen
       files extensions/Zimt/zimt_regs.sail
+    }
+    Zimt_insts {
+      requires core, sys, exceptions, CFI_types, Zimt_types, Zimt_regs, PM_utils
+      files extensions/Zimt/zimt_insts.sail
     }
   }
 
