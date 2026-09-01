@@ -10,7 +10,16 @@
   - Ssccfg
   - Zvl2048b, Zvl4096b, Zvl8192b, Zvl16384b, Zvl32768b, and Zvl65536b
 
+- The following unratified extensions have been added:
+  - Zimt (with Svatag/Smvatag), partial: instructions, CSRs and
+    no-paging implicit tag checks; CSR addresses are placeholders
+    pending allocation by the memory tagging TG
+
 - Updates to the [configuration file](../config/config.json.in):
+  - The supported Zimt pointer tag widths can be specified, see
+    `extensions.Zimt.supported_pointer_tag_width_4` and
+    `extensions.Zimt.supported_pointer_tag_width_7` (width 4 is
+    mandatory when Zimt is supported).
   - The WARL behavior of a reserved or unimplemented encoding written to `mstatus.MPP`
     can now map to the least-privileged implemented mode or keep the previous
     legal value; see `base.reserved_behavior.illegal_privilege`.
