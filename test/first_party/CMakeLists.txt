@@ -150,6 +150,7 @@ add_first_party_override_test("test_vs_ebreak_double_trap_xtval_zero_gva.S" "ssd
 add_first_party_override_test("test_mideleg_read_only_one.S" "mideleg_read_only_one.json")
 
 add_first_party_experimental_test("test_zilx.S")
+add_first_party_experimental_test("test_zimt.S")
 
 add_first_party_test_with_config("test_tval_truncate_invalid_physaddr.S" "rv64gcvh_zfbfmin" 64 "tval_truncate_invalid_physaddr.json")
 
