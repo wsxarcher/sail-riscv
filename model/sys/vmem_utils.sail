@@ -416,6 +416,12 @@ function get_transformed_data_addr(base : regidx, offset : xlenbits, access : Me
   }
 }
 
+// Zimt implicit tag check hook; defined in zimt_tag_ops.sail, which
+// must follow this file in the module since it uses vmem_read_addr.
+val zimt_implicit_check : forall 'width, is_mem_width('width).
+  (regidx, xlenbits, virtaddr, int('width), MemoryAccessType(mem_payload), AccessInfo)
+  -> option(ExecutionResult)
+
 val vmem_read_explicit : forall 'width, is_mem_width('width).
   (regidx, xlenbits, int('width), MemoryAccessType(mem_payload), AccessInfo, bool, bool, bool)
   -> result(bits(8 * 'width), ExecutionResult)
@@ -426,6 +432,14 @@ function vmem_read_explicit(rs, offset, width, access, access_info, aq, rl, res)
   let vaddr : virtaddr = match get_transformed_data_addr(rs, offset, access, access_info, width) {
     Ext_DataAddr_OK(vaddr) => vaddr,
     Ext_DataAddr_Error(e)  => return Err(Ext_DataAddr_Check_Failure(e)),
+  };
+
+  // Zimt: perform the implicit tag check, if one applies. The raw
+  // (untransformed) address carries the pointer_tag in its masked
+  // bits.
+  match zimt_implicit_check(rs, X(rs) + offset, vaddr, width, access, access_info) {
+    Some(e) => return Err(e),
+    None()  => (),
   };
 
   match vmem_read_addr(vaddr, width, access, access_info, aq, rl, res) {
@@ -452,6 +466,14 @@ function vmem_write_explicit(rs_addr, offset, width, data, access, access_info, 
   let vaddr : virtaddr = match get_transformed_data_addr(rs_addr, offset, access, access_info, width) {
     Ext_DataAddr_OK(vaddr) => vaddr,
     Ext_DataAddr_Error(e)  => return Err(Ext_DataAddr_Check_Failure(e)),
+  };
+
+  // Zimt: perform the implicit tag check, if one applies. The raw
+  // (untransformed) address carries the pointer_tag in its masked
+  // bits.
+  match zimt_implicit_check(rs_addr, X(rs_addr) + offset, vaddr, width, access, access_info) {
+    Some(e) => return Err(e),
+    None()  => (),
   };
 
   match vmem_write_addr(vaddr, width, data, access, access_info, aq, rl, res) {

@@ -107,3 +107,53 @@ function zimt_check_chunks forall 'width, is_mem_width('width). (
   };
   None()
 }
+
+// ---------------------------------------------------------------------
+// Implicit tag checks on regular loads/stores (no-translation
+// environments only).
+//
+// When memory tagging is active at the effective privilege of a
+// regular Data load/store and address translation is not in effect
+// (Bare mode), every data page is a tagged-data page ("If paging is
+// not enabled then all data pages are treated as tagged-data pages")
+// and there are no tagcheck-exempt code pages, so the access is
+// checked unless it is performed via the stack pointer (x2).
+//
+// TODO (blocked on spec): with paging enabled, checks are controlled
+// by the PTE.MTAG bit, whose position the v0.2 draft has not fixed;
+// accesses under paging are currently unchecked. mstatus.MTAG_I /
+// hstatus.MTAG_I, HLV*/HSV* (hstatus.VUMT_MODE) and vector/LR/SC/AMO
+// accesses are likewise not checked yet.
+// The val declaration (with the type) is in vmem_utils.sail, where
+// vmem_read_explicit/vmem_write_explicit invoke this hook.
+function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info) = {
+  if not(currentlyEnabled(Ext_Zimt)) then return None();
+  // Only regular data loads/stores are checked (vector/LR/SC/AMO: TODO).
+  let checked_kind : bool = match access {
+    Load(Data)  => true,
+    Store(Data) => true,
+    _           => false,
+  };
+  if not(checked_kind) then return None();
+  // HLV*/HSV* (hstatus.VUMT_MODE) are not checked yet (see above).
+  if access_info.as_guest then return None();
+  // "Memory accesses performed using the stack pointer (x2) as the
+  // base register do not generate checked accesses."
+  if base == sp then return None();
+  let eff_priv = access_info.eff_privilege;
+  let mode = get_mt_mode(eff_priv);
+  if mode == MT_MODE_Disabled then return None();
+  // Paging enabled: PTE.MTAG-based checks are TODO (see above).
+  let vmem_active : bool = if privLevel_is_virtual(eff_priv)
+    then vsatp_mode() != Bare | hgatp_mode() != HBare
+    else satp_mode(eff_priv) != Bare;
+  if vmem_active then return None();
+  let vitt : xlenbits = match get_vitt_base(eff_priv) {
+    Some(b) => b,
+    // No tag table available for this privilege: no checked accesses.
+    None()  => return None(),
+  };
+  let w = enabled_pointer_tag_width(mode);
+  let expected = mc_tag_of_pointer_tag(extract_pointer_tag(raw_addr, w), mode);
+  zimt_check_chunks(vitt, bits_of(vaddr), width, expected, mode, access)
+}
