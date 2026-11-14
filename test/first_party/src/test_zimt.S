@@ -7,8 +7,10 @@
 
 #define CSR_MSECCFG      0x747
 #define CSR_MTINST       0x34A
+#define CSR_HENVCFG      0x60A
 #define CSR_MMTAGEXCL0   0x7C0
 #define CSR_MVITT        0x7C4
+#define CSR_VSVITTS      0x6C2
 
 // A tag table base in unmapped memory.
 #define UNMAPPED_TAG_TABLE 0x20000000
@@ -41,6 +43,11 @@
 #define SWCHECK_TVAL_MEM_TAG 4
 
 #define MSTATUS_MIE          0x8
+#define MSTATUS_MPP          (3 << 11)
+#define MSTATUS_MPP_S        (1 << 11)
+#define MSTATUS_MPRV         (1 << 17)
+#define MSTATUS_GVA          (1 << 38)
+#define MSTATUS_MPV          (1 << 39)
 // mcontrol6 (type 6) trigger matching M-mode load addresses, with the
 // breakpoint action.
 #define MCONTROL6_M_LOAD     ((6 << 60) | (1 << 6) | 1)
@@ -173,7 +180,7 @@ main:
 
     // ------------------------------------------------------------------
     // 8. Traps around implicit checks, recorded by record_trap (mcause
-    //    in s2, mtval in s3, mtinst in s4):
+    //    in s2, mtval in s3, mtinst in s4, mstatus in s5):
     la t3, record_trap
     csrw mtvec, t3
     li s2, 0
@@ -224,6 +231,32 @@ main:
     add t3, t3, t4         // tag byte of chunk 0 of data_buf
     bne s3, t3, fail
     bnez s4, fail
+    //    d. a tag mismatch traps with GVA clear, as mtval (4) is not a
+    //       guest virtual address: load through a mismatching pointer
+    //       with MPRV = 1, MPV = 1 and MPP = S (effective privilege VS),
+    //       with tagging enabled for VS-mode, which uses the same tag
+    //       table.
+    li t3, (MT_MODE_TAG4 << MT_MODE_SHIFT) | (PMM_PMLEN_7 << PMM_SHIFT)
+    csrs CSR_HENVCFG, t3
+    csrr t3, CSR_MVITT
+    csrw CSR_VSVITTS, t3
+    li s2, 0
+    li t3, MSTATUS_MPP
+    csrc mstatus, t3
+    li t3, MSTATUS_MPRV | MSTATUS_MPV | MSTATUS_MPP_S
+    csrs mstatus, t3
+    ld t4, 0(t1)           // t1 = data_buf tagged with 8
+    li t3, MSTATUS_MPRV
+    csrc mstatus, t3
+    li t3, (3 << MT_MODE_SHIFT) | (3 << PMM_SHIFT)
+    csrc CSR_HENVCFG, t3
+    li t3, CAUSE_SOFTWARE_CHECK
+    bne s2, t3, fail
+    li t3, SWCHECK_TVAL_MEM_TAG
+    bne s3, t3, fail
+    li t3, MSTATUS_GVA
+    and t3, s5, t3
+    bnez t3, fail
 
     csrw mtvec, s10
 
@@ -264,13 +297,14 @@ expect_swcheck:
     csrw mepc, t4
     mret
 
-// Trap handler for section 8: record mcause in s2, mtval in s3 and
-// mtinst in s4, and resume at mepc + 4.
+// Trap handler for section 8: record mcause in s2, mtval in s3, mtinst
+// in s4 and mstatus in s5, and resume at mepc + 4.
 .p2align 6
 record_trap:
     csrr s2, mcause
     csrr s3, mtval
     csrr s4, CSR_MTINST
+    csrr s5, mstatus
     csrr t5, mepc
     addi t5, t5, 4
     csrw mepc, t5
