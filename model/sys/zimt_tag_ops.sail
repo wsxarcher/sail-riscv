@@ -51,11 +51,17 @@ function zimt_tag_byte_addr(vitt : xlenbits, chunk : xlenbits, mode : MemTagging
     _            => (vitt + chunk, false),
   }
 
-// Perform a "load tag" operation for one memory chunk.
-function zimt_load_mc_tag(vitt : xlenbits, chunk : xlenbits, mode : MemTaggingMode)
+// Perform a "load tag" operation for one memory chunk. The tag loads of
+// the implicit check of a regular load/store (`implicit`) are implicit
+// accesses that are not matched by triggers.
+function zimt_load_mc_tag(vitt : xlenbits, chunk : xlenbits, mode : MemTaggingMode, implicit : bool)
   -> result(bits(8), ExecutionResult) = {
   let (tag_va, upper_nibble) = zimt_tag_byte_addr(vitt, chunk, mode);
-  match vmem_read_addr(Virtaddr(tag_va), 1, Load(Tag), default_access_info(Load(Tag)), false, false, false) {
+  let access_info = default_access_info(Load(Tag));
+  let loaded : result(bits(8), ExecutionResult) =
+    if implicit then vmem_read_implicit_tag(Virtaddr(tag_va), access_info)
+    else vmem_read_addr(Virtaddr(tag_va), 1, Load(Tag), access_info, false, false, false);
+  match loaded {
     Err(e) => Err(e),
     Ok(byte) => Ok(match mode {
       MT_MODE_Tag4 => if upper_nibble then zero_extend(byte[7 .. 4]) else zero_extend(byte[3 .. 0]),
@@ -100,7 +106,7 @@ function zimt_check_chunks forall 'width, is_mem_width('width). (
   let last_chunk = (va + to_bits(xlen, width - 1)) >> 4;
   let nchunks = unsigned(last_chunk - first_chunk);
   foreach (i from 0 to nchunks) {
-    match zimt_load_mc_tag(vitt, first_chunk + to_bits(xlen, i), mode) {
+    match zimt_load_mc_tag(vitt, first_chunk + to_bits(xlen, i), mode, true) {
       Err(e) => return Some(e),
       Ok(mc_tag) => if mc_tag != expected then return Some(trap(make_mem_tag_exception(access))),
     }
@@ -126,7 +132,7 @@ function zimt_check_chunks forall 'width, is_mem_width('width). (
 // accesses are likewise not checked yet.
 // The val declaration (with the type) is in vmem_utils.sail, where
 // vmem_read_explicit/vmem_write_explicit invoke this hook.
-function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info) = {
+function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, trigger_payload) = {
   if not(currentlyEnabled(Ext_Zimt)) then return None();
   // Only regular data loads/stores are checked (vector/LR/SC/AMO: TODO).
   let checked_kind : bool = match access {
@@ -155,5 +161,14 @@ function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info) 
   };
   let w = enabled_pointer_tag_width(mode);
   let expected = mc_tag_of_pointer_tag(extract_pointer_tag(raw_addr, w), mode);
+  // Load/store address breakpoints have higher priority than the
+  // exceptions of the memory accesses of the instruction, so the
+  // triggers of the data access are matched before the tags are loaded.
+  // vmem_read_addr/vmem_write_addr match the same payload again, which
+  // gives the same result.
+  match match_memory_trigger_before(cur_privilege, trigger_payload, access_is_gva(access_info)) {
+    Some(pti) => return Some(PendingTrigger(pti)),
+    None()    => (),
+  };
   zimt_check_chunks(vitt, bits_of(vaddr), width, expected, mode, access)
 }

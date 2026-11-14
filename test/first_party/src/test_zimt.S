@@ -31,8 +31,14 @@
   .4byte ((0x41 << 25) | (\imm4 << 20) | (\rs1 << 15) | (0x4 << 12) | 0x73)
 .endm
 
+#define CAUSE_BREAKPOINT     3
 #define CAUSE_SOFTWARE_CHECK 18
 #define SWCHECK_TVAL_MEM_TAG 4
+
+#define MSTATUS_MIE          0x8
+// mcontrol6 (type 6) trigger matching M-mode load addresses, with the
+// breakpoint action.
+#define MCONTROL6_M_LOAD     ((6 << 60) | (1 << 6) | 1)
 
 .global main
 main:
@@ -161,7 +167,45 @@ main:
     csrw mtvec, s10
 
     // ------------------------------------------------------------------
-    // 8. Disable memory tagging: gentag must fall back to Zimop
+    // 8. Traps around implicit checks, recorded by record_trap (mcause
+    //    in s2, mtval in s3):
+    la t3, record_trap
+    csrw mtvec, t3
+    li s2, 0
+    //    a. the tag loads of an implicit check are not matched by
+    //       triggers: with an M-mode load address trigger on the tag
+    //       byte of data_buf (M-mode breakpoints need mstatus.MIE = 1),
+    //       a load through a matching pointer does not trap,
+    la t2, data_buf
+    csrr t3, CSR_MVITT
+    srli t4, t2, 5
+    add t3, t3, t4         // tag byte of chunk 0 of data_buf
+    csrw tselect, zero
+    csrw tdata2, t3
+    li t3, MCONTROL6_M_LOAD
+    csrw tdata1, t3
+    csrsi mstatus, MSTATUS_MIE
+    li t0, 5
+    slli t0, t0, 60
+    or t0, t0, t2          // t0 = data_buf tagged with 5
+    ld t4, 0(t0)
+    bnez s2, fail
+    //    b. a data address breakpoint has priority over the tag check:
+    //       with the trigger on data_buf, a load through a mismatching
+    //       pointer takes the breakpoint.
+    csrw tdata2, t2
+    addtag 6, 5, 3         // t1 = data_buf tagged with 8
+    ld t4, 0(t1)
+    li t3, CAUSE_BREAKPOINT
+    bne s2, t3, fail
+    bne s3, t2, fail
+    csrw tdata1, zero
+    csrci mstatus, MSTATUS_MIE
+
+    csrw mtvec, s10
+
+    // ------------------------------------------------------------------
+    // 9. Disable memory tagging: gentag must fall back to Zimop
     //    behavior and zero its destination.
     li t0, (3 << MT_MODE_SHIFT)
     csrc CSR_MSECCFG, t0
@@ -174,6 +218,9 @@ pass:
     li a0, 0
     ret
 fail:
+    // Disable memory tagging so the exit path is not tag-checked.
+    li t0, (3 << MT_MODE_SHIFT)
+    csrc CSR_MSECCFG, t0
     mv ra, s11
     li a0, 1
     ret
@@ -192,6 +239,17 @@ expect_swcheck:
     csrr t4, mepc
     addi t4, t4, 4
     csrw mepc, t4
+    mret
+
+// Trap handler for section 8: record mcause in s2 and mtval in s3, and
+// resume at mepc + 4.
+.p2align 6
+record_trap:
+    csrr s2, mcause
+    csrr s3, mtval
+    csrr t5, mepc
+    addi t5, t5, 4
+    csrw mepc, t5
     mret
 #else
     // Zimt is RV64-only; pass trivially on RV32.

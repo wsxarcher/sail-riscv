@@ -149,7 +149,7 @@ function clause execute CHECKTAG(imm, rs1) = {
   // starting at the chunk containing va.
   let chunk0 = va >> 4;
   foreach (i from 0 to unsigned(imm)) {
-    match zimt_load_mc_tag(vitt, chunk0 + to_bits(xlen, i), mode) {
+    match zimt_load_mc_tag(vitt, chunk0 + to_bits(xlen, i), mode, false) {
       Err(e) => return e,
       Ok(mc_tag) => if mc_tag != expected then return trap(make_mem_tag_exception(Load(Tag))),
     }

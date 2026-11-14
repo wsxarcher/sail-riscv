@@ -382,10 +382,22 @@ function get_transformed_data_addr(base : regidx, offset : xlenbits, access : Me
   }
 }
 
+// Zimt "load tag" operation of the implicit tag check of a regular load
+// or store. Its address is not determined by the instruction, so it is an
+// implicit access and, unlike vmem_read_addr, it is not matched by
+// triggers. Tag loads are single bytes, so they are never misaligned or
+// split.
+function vmem_read_implicit_tag(vaddr : virtaddr, access_info : AccessInfo) -> result(bits(8), ExecutionResult) =
+  match translate_and_read_value(vaddr, 1, Load(Tag), access_info, false, false, false) {
+    Ok(_, data) => Ok(data),
+    Err(e)      => Err(e),
+  }
+
 // Zimt implicit tag check hook; defined in zimt_tag_ops.sail, which
 // must follow this file in the module since it uses vmem_read_addr.
+// The last argument is the trigger payload of the data access.
 val zimt_implicit_check : forall 'width, is_mem_width('width).
-  (regidx, xlenbits, virtaddr, int('width), MemoryAccessType(mem_payload), AccessInfo)
+  (regidx, xlenbits, virtaddr, int('width), MemoryAccessType(mem_payload), AccessInfo, MemoryTriggerPayload)
   -> option(ExecutionResult)
 
 val vmem_read_explicit : forall 'width, is_mem_width('width).
@@ -403,7 +415,8 @@ function vmem_read_explicit(rs, offset, width, access, access_info, aq, rl, res)
   // Zimt: perform the implicit tag check, if one applies. The raw
   // (untransformed) address carries the pointer_tag in its masked
   // bits.
-  match zimt_implicit_check(rs, X(rs) + offset, vaddr, width, access, access_info) {
+  match zimt_implicit_check(rs, X(rs) + offset, vaddr, width, access, access_info,
+                            TriggerAddress(TriggerAddress_Load, bits_of(vaddr), width)) {
     Some(e) => return Err(e),
     None()  => (),
   };
@@ -437,7 +450,8 @@ function vmem_write_explicit(rs_addr, offset, width, data, access, access_info, 
   // Zimt: perform the implicit tag check, if one applies. The raw
   // (untransformed) address carries the pointer_tag in its masked
   // bits.
-  match zimt_implicit_check(rs_addr, X(rs_addr) + offset, vaddr, width, access, access_info) {
+  match zimt_implicit_check(rs_addr, X(rs_addr) + offset, vaddr, width, access, access_info,
+                            TriggerStore(bits_of(vaddr), data, width)) {
     Some(e) => return Err(e),
     None()  => (),
   };
