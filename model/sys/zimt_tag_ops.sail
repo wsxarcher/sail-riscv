@@ -92,6 +92,19 @@ function zimt_store_mc_tag(vitt : xlenbits, chunk : xlenbits, mc_tag : bits(8), 
   }
 }
 
+// A transformed instruction in mtinst/htinst may only describe an
+// exception that arises from the explicit memory access of the trapping
+// instruction, so a fault of a tag load writes zero there instead
+// (unless it already carries a pseudoinstruction value).
+function without_transformed_instruction(e : ExecutionResult) -> ExecutionResult =
+  match e {
+    Trap(priv, ctx, pc) => match ctx.excinst {
+      None()  => Trap(priv, { ctx with excinst = Some(zeros()) }, pc),
+      Some(_) => e,
+    },
+    _ => e,
+  }
+
 // Check the tags of all chunks overlapped by [va, va + width) against
 // `expected`; returns None() on success, or the resulting trap.
 function zimt_check_chunks forall 'width, is_mem_width('width). (
@@ -107,7 +120,7 @@ function zimt_check_chunks forall 'width, is_mem_width('width). (
   let nchunks = unsigned(last_chunk - first_chunk);
   foreach (i from 0 to nchunks) {
     match zimt_load_mc_tag(vitt, first_chunk + to_bits(xlen, i), mode, true) {
-      Err(e) => return Some(e),
+      Err(e) => return Some(without_transformed_instruction(e)),
       Ok(mc_tag) => if mc_tag != expected then return Some(trap(make_mem_tag_exception(access))),
     }
   };

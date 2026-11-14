@@ -6,8 +6,12 @@
 // model/extensions/Zimt/zimt_regs.sail).
 
 #define CSR_MSECCFG      0x747
+#define CSR_MTINST       0x34A
 #define CSR_MMTAGEXCL0   0x7C0
 #define CSR_MVITT        0x7C4
+
+// A tag table base in unmapped memory.
+#define UNMAPPED_TAG_TABLE 0x20000000
 
 // mseccfg.MT_MODE: bits 35:34; mseccfg.PMM: bits 33:32.
 #define MT_MODE_SHIFT    34
@@ -32,6 +36,7 @@
 .endm
 
 #define CAUSE_BREAKPOINT     3
+#define CAUSE_LOAD_ACCESS    5
 #define CAUSE_SOFTWARE_CHECK 18
 #define SWCHECK_TVAL_MEM_TAG 4
 
@@ -168,7 +173,7 @@ main:
 
     // ------------------------------------------------------------------
     // 8. Traps around implicit checks, recorded by record_trap (mcause
-    //    in s2, mtval in s3):
+    //    in s2, mtval in s3, mtinst in s4):
     la t3, record_trap
     csrw mtvec, t3
     li s2, 0
@@ -201,6 +206,24 @@ main:
     bne s3, t2, fail
     csrw tdata1, zero
     csrci mstatus, MSTATUS_MIE
+    //    c. a tag load fault does not arise from the access of the
+    //       instruction, so mtinst is zero, not the transformed load:
+    //       with the tag table in unmapped memory, a checked load takes
+    //       a load access fault on the tag address.
+    csrr s7, CSR_MVITT
+    li t3, UNMAPPED_TAG_TABLE
+    csrw CSR_MVITT, t3
+    li s2, 0
+    li s4, -1
+    ld t4, 0(t0)           // t0 = data_buf tagged with 5
+    csrw CSR_MVITT, s7
+    li t3, CAUSE_LOAD_ACCESS
+    bne s2, t3, fail
+    srli t3, t2, 5
+    li t4, UNMAPPED_TAG_TABLE
+    add t3, t3, t4         // tag byte of chunk 0 of data_buf
+    bne s3, t3, fail
+    bnez s4, fail
 
     csrw mtvec, s10
 
@@ -241,12 +264,13 @@ expect_swcheck:
     csrw mepc, t4
     mret
 
-// Trap handler for section 8: record mcause in s2 and mtval in s3, and
-// resume at mepc + 4.
+// Trap handler for section 8: record mcause in s2, mtval in s3 and
+// mtinst in s4, and resume at mepc + 4.
 .p2align 6
 record_trap:
     csrr s2, mcause
     csrr s3, mtval
+    csrr s4, CSR_MTINST
     csrr t5, mepc
     addi t5, t5, 4
     csrw mepc, t5
