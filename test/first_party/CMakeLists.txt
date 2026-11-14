@@ -120,6 +120,10 @@ macro(add_first_party_experimental_test name)
     add_first_party_test_with_config("${name}" "rv64${isa_extension}" 64 "no_override.json")
     list(APPEND experimental_tests "${name}")
 endmacro()
+macro(add_first_party_experimental_override_test name override)
+    add_first_party_override_test("${name}" "${override}")
+    list(APPEND experimental_tests "${name}")
+endmacro()
 
 add_first_party_test("test_bf16_nan_boxing.S")
 add_first_party_test("test_hello_world.c")
@@ -151,6 +155,7 @@ add_first_party_override_test("test_mideleg_read_only_one.S" "mideleg_read_only_
 
 add_first_party_experimental_test("test_zilx.S")
 add_first_party_experimental_test("test_zimt.S")
+add_first_party_experimental_override_test("test_zimt_no_cfi.S" "zimt_no_cfi.json")
 
 add_first_party_test_with_config("test_tval_truncate_invalid_physaddr.S" "rv64gcvh_zfbfmin" 64 "tval_truncate_invalid_physaddr.json")
 
