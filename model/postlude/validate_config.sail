@@ -1131,9 +1131,9 @@ private function check_extension_param_constraints() -> bool = {
       valid = false;
       print_endline("Bit 11 (Environment call from M-mode) in `base.medeleg.delegatable_bits` is set; this environment call cannot be delegated.");
     };
-    if medelegation[Software_Check] != 0b0 & priv_isa_version < Privileged_ISA_1_13 & not(config extensions.Zicfiss.supported : bool) & not(config extensions.Zicfilp.supported : bool) then {
+    if medelegation[Software_Check] != 0b0 & priv_isa_version < Privileged_ISA_1_13 & not(config extensions.Zicfiss.supported : bool) & not(config extensions.Zicfilp.supported : bool) & not(hartSupports(Ext_Zimt)) then {
       valid = false;
-      print_endline("Bit 18 (Software Check) in `base.medeleg.delegatable_bits` is set, but the software-check exception requires privileged ISA version 1.13 or later, or Zicfilp or Zicfiss support.");
+      print_endline("Bit 18 (Software Check) in `base.medeleg.delegatable_bits` is set, but the software-check exception requires privileged ISA version 1.13 or later, or Zicfilp, Zicfiss or Zimt support.");
     };
     if medelegation[Hardware_Error] != 0b0 & priv_isa_version < Privileged_ISA_1_13 then {
       valid = false;
