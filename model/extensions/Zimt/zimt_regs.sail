@@ -146,7 +146,9 @@ function get_mtag_exclusion_mask(priv : Privilege) -> bits(128) =
 // ---------------------------------------------------------------------
 // VITT (virtually indexed tag table) base CSRs, Svatag/Smvatag.
 // "Tag table base address must be 4K aligned" - bits [11:0] are WARL
-// read-only zero.
+// read-only zero. "The CSR access from VS mode, if allowed, uses the
+// state of vsvitts and vsvittu CSRs, respectively": like the other VS CSR
+// substitutes, svitts and svittu access vsvitts and vsvittu when V=1.
 register mvitt   : xlenbits = zeros()
 register svitts  : xlenbits = zeros()
 register svittu  : xlenbits = zeros()
@@ -168,14 +170,18 @@ function clause is_CSR_accessible(0x6C2, _, _) = currentlyEnabled(Ext_Svatag) & 
 function clause is_CSR_accessible(0x6C3, _, _) = currentlyEnabled(Ext_Svatag) & currentlyEnabled(Ext_H)
 
 function clause read_CSR(0x7C4) = mvitt
-function clause read_CSR(0x5C2) = svitts
-function clause read_CSR(0x5C3) = svittu
+function clause read_CSR(0x5C2) = if inVirtualPrivilege() then vsvitts else svitts
+function clause read_CSR(0x5C3) = if inVirtualPrivilege() then vsvittu else svittu
 function clause read_CSR(0x6C2) = vsvitts
 function clause read_CSR(0x6C3) = vsvittu
 
 function clause write_CSR(0x7C4, value) = { mvitt = legalize_vitt(value); Ok(mvitt) }
-function clause write_CSR(0x5C2, value) = { svitts = legalize_vitt(value); Ok(svitts) }
-function clause write_CSR(0x5C3, value) = { svittu = legalize_vitt(value); Ok(svittu) }
+function clause write_CSR(0x5C2, value) =
+  if inVirtualPrivilege() then { vsvitts = legalize_vitt(value); Ok(vsvitts) }
+  else { svitts = legalize_vitt(value); Ok(svitts) }
+function clause write_CSR(0x5C3, value) =
+  if inVirtualPrivilege() then { vsvittu = legalize_vitt(value); Ok(vsvittu) }
+  else { svittu = legalize_vitt(value); Ok(svittu) }
 function clause write_CSR(0x6C2, value) = { vsvitts = legalize_vitt(value); Ok(vsvitts) }
 function clause write_CSR(0x6C3, value) = { vsvittu = legalize_vitt(value); Ok(vsvittu) }
 
