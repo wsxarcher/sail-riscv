@@ -14,8 +14,10 @@
 //   mc_tag_va = VITT_BASE + (((va >> 4) * mc_tag_width) >> 3)
 // i.e. two 4-bit tags packed per byte, or one 8-bit tag per byte.
 // Tag loads/stores flow through vmem_read_addr/vmem_write_addr with
-// the Tag payload, so page faults and access faults on the tag table
-// are reported against the tag virtual address as required.
+// the Tag payload (the read-modify-write of a 4-bit tag through
+// vmem_read_tag_rmw/vmem_write_tag_rmw), so page faults and access
+// faults on the tag table are reported against the tag virtual address
+// as required.
 
 // Software-check exception for a tag mismatch, xtval = 4. xtval does not
 // hold a guest virtual address, so GVA is clear, except for HLV*/HSV*
@@ -74,23 +76,43 @@ function zimt_load_mc_tag(vitt : xlenbits, chunk : xlenbits, mode : MemTaggingMo
 
 // Perform a "store tag" operation for one memory chunk. For
 // mc_tag_width = 4 this is a read-modify-write of the shared byte;
-// the spec provides no atomicity guarantee for settag.
+// the spec provides no atomicity guarantee for settag. The read is part
+// of the store tag operation, so it is checked like the write (address
+// translation, PMP and PMA as a Store(Tag) access) and raises store/AMO
+// faults: "settag can raise store page fault or access fault depending
+// on how tag storage is organized." Like an AMO, the read-modify-write
+// is matched by triggers as a whole: store address triggers before it,
+// so that they take priority over its exceptions and precede its PTE
+// A/D updates, and store data triggers on the byte written, after it.
+// The read is not matched by load triggers, so the triggers that
+// settag matches do not depend on mc_tag_width.
 function zimt_store_mc_tag(vitt : xlenbits, chunk : xlenbits, mc_tag : bits(8), mode : MemTaggingMode)
   -> result(unit, ExecutionResult) = {
   let (tag_va, upper_nibble) = zimt_tag_byte_addr(vitt, chunk, mode);
-  let value : bits(8) = match mode {
+  let access_info = default_access_info(Store(Tag));
+  match mode {
     MT_MODE_Tag4 => {
-      match vmem_read_addr(Virtaddr(tag_va), 1, Load(Tag), default_access_info(Load(Tag)), false, false, false) {
+      match match_memory_trigger_before(cur_privilege, TriggerAddress(TriggerAddress_Store, tag_va, 1), access_is_gva(access_info)) {
+        Some(pti) => return Err(PendingTrigger(pti)),
+        None()    => (),
+      };
+      let byte : bits(8) = match vmem_read_tag_rmw(Virtaddr(tag_va), access_info) {
         Err(e) => return Err(e),
-        Ok(byte) => if upper_nibble then [byte with 7 .. 4 = mc_tag[3 .. 0]]
-                    else [byte with 3 .. 0 = mc_tag[3 .. 0]],
-      }
+        Ok(b)  => b,
+      };
+      let value : bits(8) = if upper_nibble then [byte with 7 .. 4 = mc_tag[3 .. 0]]
+                            else [byte with 3 .. 0 = mc_tag[3 .. 0]];
+      match vmem_write_tag_rmw(Virtaddr(tag_va), value, access_info) {
+        Err(e) => return Err(e),
+        Ok(()) => (),
+      };
+      match_memory_trigger_after(cur_privilege, TriggerStore(tag_va, value, 1), access_is_gva(access_info));
+      Ok(())
     },
-    _ => mc_tag,
-  };
-  match vmem_write_addr(Virtaddr(tag_va), 1, value, Store(Tag), default_access_info(Store(Tag)), false, false, false) {
-    Err(e) => Err(e),
-    Ok(_)  => Ok(()),
+    _ => match vmem_write_addr(Virtaddr(tag_va), 1, mc_tag, Store(Tag), access_info, false, false, false) {
+      Err(e) => Err(e),
+      Ok(_)  => Ok(()),
+    },
   }
 }
 
