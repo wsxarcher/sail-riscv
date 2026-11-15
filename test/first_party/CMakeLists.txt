@@ -157,6 +157,7 @@ add_first_party_experimental_test("test_zilx.S")
 add_first_party_experimental_test("test_zimt.S")
 add_first_party_experimental_override_test("test_zimt_no_cfi.S" "zimt_no_cfi.json")
 add_first_party_experimental_test("test_svatag_vs.S")
+add_first_party_experimental_override_test("test_zimt_settag.S" "zimt_settag.json")
 
 add_first_party_test_with_config("test_tval_truncate_invalid_physaddr.S" "rv64gcvh_zfbfmin" 64 "tval_truncate_invalid_physaddr.json")
 

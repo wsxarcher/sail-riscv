@@ -119,9 +119,14 @@ private function pmaCheck forall 'n, 0 < 'n <= max_mem_access .
     Load(ShadowStack)      => {assert(not(res_or_con)); attributes.readable & attributes.read_idempotent},
     Store(ShadowStack)     => {assert(not(res_or_con)); attributes.writable & attributes.write_idempotent},
 
-    // Zimt tag table accesses are checked like regular loads/stores.
+    // Zimt tag table accesses: "load tag operation requires permission
+    // for tag storage memory to be --R while store tag operation require
+    // permission to be -WR". The store tag operations of settag
+    // (including the read of a 4-bit tag's read-modify-write) also need
+    // idempotent memory: "Tag storage memory must be idempotent memory
+    // else settag raise store/AMO access-fault exception."
     Load(Tag)              => {assert(not(res_or_con)); attributes.readable},
-    Store(Tag)             => {assert(not(res_or_con)); attributes.writable},
+    Store(Tag)             => {assert(not(res_or_con)); attributes.readable & attributes.writable & attributes.read_idempotent & attributes.write_idempotent},
     Atomic(AMOSWAP, _, _, ShadowStack, ShadowStack) => {assert(res_or_con); attributes.readable & attributes.writable & attributes.read_idempotent & attributes.write_idempotent & pma_allows_atomic_op(attributes.atomic_support, AMOSWAP, width)},
 
     // TODO for the CMO extensions: "The PMAs shall be the

@@ -393,6 +393,24 @@ function vmem_read_implicit_tag(vaddr : virtaddr, access_info : AccessInfo) -> r
     Err(e)      => Err(e),
   }
 
+// The read and the write of the read-modify-write of a Zimt "store tag"
+// operation with mc_tag_width = 4 (settag). Both are checked as
+// Store(Tag) accesses, so they raise store/AMO faults. Like the accesses
+// of an AMO, they are not matched by triggers here: zimt_store_mc_tag
+// matches the triggers of the whole read-modify-write. Tag bytes are
+// never misaligned or split.
+function vmem_read_tag_rmw(vaddr : virtaddr, access_info : AccessInfo) -> result(bits(8), ExecutionResult) =
+  match translate_and_read_value(vaddr, 1, Store(Tag), access_info, false, false, false) {
+    Ok(_, data) => Ok(data),
+    Err(e)      => Err(e),
+  }
+
+function vmem_write_tag_rmw(vaddr : virtaddr, data : bits(8), access_info : AccessInfo) -> result(unit, ExecutionResult) =
+  match translate_and_write_value(vaddr, 1, data, Store(Tag), access_info, false, false, false) {
+    Ok(_)  => Ok(()),
+    Err(e) => Err(e),
+  }
+
 // Zimt implicit tag check hook; defined in zimt_tag_ops.sail, which
 // must follow this file in the module since it uses vmem_read_addr.
 // The last argument is the trigger payload of the data access.
