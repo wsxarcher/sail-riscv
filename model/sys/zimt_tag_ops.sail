@@ -17,7 +17,11 @@
 // the Tag payload (the read-modify-write of a 4-bit tag through
 // vmem_read_tag_rmw/vmem_write_tag_rmw), so page faults and access
 // faults on the tag table are reported against the tag virtual address
-// as required.
+// as required. They are single bytes, so they never raise
+// address-misaligned exceptions: "such operations must not raise
+// misaligned exception" (the resolution of riscv-memory-tagging issue
+// #60; the settag exceptions text that allows one without misaligned
+// support predates it).
 
 // Software-check exception for a tag mismatch, xtval = 4. xtval does not
 // hold a guest virtual address, so GVA is clear, except for HLV*/HSV*
@@ -152,21 +156,26 @@ function zimt_check_chunks forall 'width, is_mem_width('width). (
 }
 
 // ---------------------------------------------------------------------
-// Implicit tag checks on regular loads/stores (no-translation
-// environments only).
+// Implicit tag checks on regular loads/stores (environments without
+// first-stage address translation only).
 //
 // When memory tagging is active at the effective privilege of a
-// regular Data load/store and address translation is not in effect
-// (Bare mode), every data page is a tagged-data page ("If paging is
-// not enabled then all data pages are treated as tagged-data pages")
+// regular Data load/store and its first-stage address translation
+// (satp, or vsatp for VS/VU) is Bare, every data page is a tagged-data
+// page ("If paging is disabled and memory tagging is enabled for
+// execution environment, then all data pages are tagged-data page")
 // and there are no tagcheck-exempt code pages, so the access is
-// checked unless it is performed via the stack pointer (x2).
+// checked unless it is performed via the stack pointer (x2). The G
+// stage does not count: tagged-data pages are defined by the MTAG bit
+// "in first stage page tables", so a VS/VU access with vsatp = Bare is
+// checked whatever hgatp is, and the G stage translates its tag loads,
+// which can then raise load guest-page faults.
 //
-// TODO (blocked on spec): with paging enabled, checks are controlled
-// by the PTE.MTAG bit, whose position the v0.2 draft has not fixed;
-// accesses under paging are currently unchecked. mstatus.MTAG_I /
-// hstatus.MTAG_I, HLV*/HSV* (hstatus.VUMT_MODE) and vector/LR/SC/AMO
-// accesses are likewise not checked yet.
+// TODO (blocked on spec): with first-stage paging enabled, checks are
+// controlled by the PTE.MTAG bit, whose position the v0.2 draft has not
+// fixed; accesses under first-stage paging are currently unchecked.
+// mstatus.MTAG_I / hstatus.MTAG_I, HLV*/HSV* (hstatus.VUMT_MODE) and
+// vector/LR/SC/AMO accesses are likewise not checked yet.
 // The val declaration (with the type) is in vmem_utils.sail, where
 // vmem_read_explicit/vmem_write_explicit invoke this hook.
 function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, trigger_payload) = {
@@ -186,11 +195,12 @@ function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, 
   let eff_priv = access_info.eff_privilege;
   let mode = get_mt_mode(eff_priv);
   if mode == MT_MODE_Disabled then return None();
-  // Paging enabled: PTE.MTAG-based checks are TODO (see above).
-  let vmem_active : bool = if privLevel_is_virtual(eff_priv)
-    then vsatp_mode() != Bare | hgatp_mode() != HBare
+  // First-stage paging enabled: PTE.MTAG-based checks are TODO (see
+  // above).
+  let first_stage_paging : bool = if privLevel_is_virtual(eff_priv)
+    then vsatp_mode() != Bare
     else satp_mode(eff_priv) != Bare;
-  if vmem_active then return None();
+  if first_stage_paging then return None();
   let vitt : xlenbits = match get_vitt_base(eff_priv) {
     Some(b) => b,
     // No tag table available for this privilege: no checked accesses.

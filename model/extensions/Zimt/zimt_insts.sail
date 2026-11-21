@@ -45,36 +45,61 @@ mapping clause encdec = SETTAG(imm, rs1)
   <-> 0b1000001 @ 0b0 @ imm @ encdec_reg(rs1) @ 0b100 @ 0b00000 @ 0b1110011
   when currentlyEnabled(Ext_Zimt) & rs1 != zreg
 
-// gentag state.
+// Tag generation of gentag.
 //
-// TG DISCUSSION ITEM: the spec requires gentag to produce
-// pseudorandom, uniformly distributed tags over the permitted values.
-// A deterministic reference model cannot be both reproducible and
-// unpredictable; this implementation keeps a free-running 7-bit
-// counter and returns the first permitted tag value cyclically at or
-// above it, which guarantees every permitted value occurs but NOT
-// uniformity or unpredictability. Tests must not rely on specific
-// generated values, except when the exclusion mask permits exactly
-// one value.
-register zimt_gentag_state : bits(7) = zeros()
+// gentag "generates a pointer_tag value from the set of tag values
+// permitted by the active tag generation exclusion mask", and "the
+// implementation must ensure that the generated tag is pseudorandom and
+// uniformly distributed over the permitted tag values across
+// invocations of gentag". With n permitted values, this implementation
+// draws k uniformly from [0, n) with the pseudorandom numbers of
+// zimt_gentag_random and returns the k-th permitted value in increasing
+// order. The numbers are deterministic, so tests must not rely on
+// specific generated values, except when the exclusion mask permits
+// exactly one value.
 
-// First tag value permitted by `mask`, searching cyclically from
-// `start`. The exclusion-mask WARL rule guarantees at least one
-// permitted value in [15:0], so the search always succeeds.
-function zimt_pick_tag(mask : bits(128), start : range(0, 127), num_tags : {16, 128}) -> range(0, 127) = {
-  var chosen : range(0, 127) = 0;
-  var found : bool = false;
-  foreach (i from 0 to 127) {
-    if (i < num_tags) & not(found) then {
-      let cand = (start + i) % num_tags;
-      if mask[cand] == bitzero then {
-        chosen = cand;
-        found = true;
-      }
+// A k uniformly distributed over [0, n), by Lemire's method: the high
+// part of r * n for a 32-bit pseudorandom r, rejecting the r for which
+// the low part is below 2^32 mod n, so that every k has as many
+// accepted r. A rejection has a probability below n / 2^32 <= 2^-25,
+// so this takes the k of the eighth draw if all eight are rejected.
+function zimt_uniform_below(n : range(1, 128)) -> range(0, 127) = {
+  let threshold = (2 ^ 32) % n;
+  var k : range(0, 127) = 0;
+  var accepted : bool = false;
+  foreach (i from 0 to 7) {
+    if not(accepted) then {
+      let m = unsigned(zimt_gentag_random()) * n;
+      k = unsigned(get_slice_int(7, m, 32));
+      accepted = unsigned(get_slice_int(32, m, 0)) >= threshold;
     }
   };
-  assert(found, "Zimt: exclusion mask permits no tag value");
-  chosen
+  k
+}
+
+// The k-th (from 0) value whose bit is set in `permitted`, which has
+// more than k bits set.
+function zimt_kth_permitted(permitted : bits(128), k : range(0, 127)) -> range(0, 127) = {
+  var seen : int = 0;
+  var tag : range(0, 127) = 0;
+  foreach (i from 0 to 127) {
+    if permitted[i] == bitone then {
+      if seen == k then tag = i;
+      seen = seen + 1;
+    }
+  };
+  tag
+}
+
+// A pseudorandom tag value of width w, uniformly distributed over the
+// values that `mask` permits. The exclusion-mask WARL rule keeps one of
+// the values 0-15 permitted, so there is always one.
+function zimt_generate_tag(mask : bits(128), w : zimt_tag_width) -> range(0, 127) = {
+  let values : bits(128) = if w == 4 then zero_extend(0xFFFF) else ones();
+  let permitted = not_vec(mask) & values;
+  let n = count_ones(permitted);
+  assert(n > 0, "Zimt: exclusion mask permits no tag value");
+  zimt_kth_permitted(permitted, zimt_uniform_below(n))
 }
 
 function clause execute GENTAG(rd) = {
@@ -85,11 +110,7 @@ function clause execute GENTAG(rd) = {
     return RETIRE_SUCCESS
   };
   let w = enabled_pointer_tag_width(mode);
-  let num_tags : {16, 128} = if w == 4 then 16 else 128;
-  let mask = get_mtag_exclusion_mask(cur_privilege);
-  zimt_gentag_state = zimt_gentag_state + 1;
-  let start = unsigned(zimt_gentag_state) % num_tags;
-  let tag = zimt_pick_tag(mask, start, num_tags);
+  let tag = zimt_generate_tag(get_mtag_exclusion_mask(cur_privilege), w);
   X(rd) = insert_pointer_tag(zeros(), to_bits(7, tag), w);
   RETIRE_SUCCESS
 }

@@ -125,6 +125,48 @@ function clause write_CSR(0x5C1, value) = { senvmtagexclude1 = value; Ok(senvmta
 function clause write_CSR(0x6C0, value) = { henvmtagexclude0 = legalize_mtagexclude0(value); Ok(henvmtagexclude0) }
 function clause write_CSR(0x6C1, value) = { henvmtagexclude1 = value; Ok(henvmtagexclude1) }
 
+// ---------------------------------------------------------------------
+// Pseudorandom numbers for gentag.
+//
+// "Even though the entropy space is small, the implementation must
+// ensure that the generated tag is pseudorandom and uniformly
+// distributed over the permitted tag values across invocations of
+// gentag." The numbers come from an xorshift64* generator, which the
+// tag generation of gentag advances (see zimt_insts.sail). It is
+// deterministic, so that runs are reproducible. Its seed is an odd
+// constant with twice mhartid XORed in, so the state is never zero and
+// the harts of a system draw different tags.
+register zimt_gentag_rng : bits(64) = 0x9E37_79B9_7F4A_7C15
+
+function zimt_gentag_seed() -> bits(64) = {
+  let hartid : bits(64) = zero_extend(mhartid);
+  0x9E37_79B9_7F4A_7C15 ^ (hartid << 1)
+}
+
+// The next 32-bit pseudorandom number: the high half of the next
+// xorshift64* output, whose low bits are the weakest.
+function zimt_gentag_random() -> bits(32) = {
+  var x = zimt_gentag_rng;
+  x = x ^ (x >> 12);
+  x = x ^ (x << 25);
+  x = x ^ (x >> 27);
+  zimt_gentag_rng = x;
+  get_slice_int(32, unsigned(x) * unsigned(0x2545_F491_4F6C_DD1D), 32)
+}
+
+function reset_zimt() -> unit = {
+  // "The reset value of the tag generation exclusion mask CSRs is zero."
+  mmtagexclude0    = zeros();
+  mmtagexclude1    = zeros();
+  menvmtagexclude0 = zeros();
+  menvmtagexclude1 = zeros();
+  senvmtagexclude0 = zeros();
+  senvmtagexclude1 = zeros();
+  henvmtagexclude0 = zeros();
+  henvmtagexclude1 = zeros();
+  zimt_gentag_rng  = zimt_gentag_seed();
+}
+
 // The 128-bit tag-generation exclusion mask (high @ low) active at
 // `priv`. Zimt is RV64-only, so xlen is 64 whenever this is
 // reachable; zero_extend keeps the RV32 build type-correct.

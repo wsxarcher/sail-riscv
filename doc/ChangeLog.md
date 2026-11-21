@@ -12,7 +12,8 @@
 
 - The following unratified extensions have been added:
   - Zimt (with Svatag/Smvatag), partial: instructions, CSRs and
-    no-paging implicit tag checks; CSR addresses are placeholders
+    implicit tag checks without first-stage paging (satp, or vsatp
+    at V=1, whatever hgatp is); CSR addresses are placeholders
     pending allocation by the memory tagging TG
 
 - Updates to the [configuration file](../config/config.json.in):

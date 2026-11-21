@@ -9,6 +9,7 @@
 #define CSR_MTINST       0x34A
 #define CSR_HENVCFG      0x60A
 #define CSR_MMTAGEXCL0   0x7C0
+#define CSR_MMTAGEXCL1   0x7C1
 #define CSR_MVITT        0x7C4
 #define CSR_VSVITTS      0x6C2
 
@@ -18,6 +19,7 @@
 // mseccfg.MT_MODE: bits 35:34; mseccfg.PMM: bits 33:32.
 #define MT_MODE_SHIFT    34
 #define MT_MODE_TAG4     2
+#define MT_MODE_TAG7     3
 #define PMM_SHIFT        32
 #define PMM_PMLEN_7      2
 
@@ -101,9 +103,10 @@ main:
     bnez t1, fail
 
     // ------------------------------------------------------------------
-    // 3. gentag with an exclusion mask permitting only tag value 5
-    //    must deterministically generate pointer_tag = 5 (in bits
-    //    63:60), with the rest of rd cleared.
+    // 3. gentag:
+    //    a. with an exclusion mask permitting only tag value 5 it must
+    //       generate pointer_tag = 5 (in bits 63:60), with the rest of
+    //       rd cleared,
     li t0, 0xFFDF          // exclude all 4-bit tags except 5
     csrw CSR_MMTAGEXCL0, t0
     gentag 5               // t0 <- generated tagged (null) pointer
@@ -111,14 +114,106 @@ main:
     slli t1, t1, 60
     bne t0, t1, fail
 
-    // The exclusion mask is WARL: at least one bit of [15:0] must
-    // remain clear.
+    //    b. the exclusion mask is WARL: at least one bit of [15:0] must
+    //       remain clear,
     li t0, 0xFFFF
     csrw CSR_MMTAGEXCL0, t0
     csrr t1, CSR_MMTAGEXCL0
     li t2, 0xFFFF
     beq t1, t2, fail
     csrw CSR_MMTAGEXCL0, zero
+
+    //    c. its tags are pseudorandom and uniformly distributed over the
+    //       permitted values: with all 16 permitted, 1600 draws give
+    //       each value 100 +- 50 times, and fewer than 400 draws are one
+    //       above the draw before (mod 16), which a counter always is,
+    la t2, tag_counts
+    li t3, 1600
+    li s4, 0               // draws one above the draw before
+    li s5, 0               // the draw before
+1:  gentag 5
+    srli t4, t0, 60
+    slli t5, t4, 3
+    add t5, t5, t2
+    ld t6, 0(t5)
+    addi t6, t6, 1
+    sd t6, 0(t5)
+    addi t6, s5, 1
+    andi t6, t6, 15
+    bne t6, t4, 2f
+    addi s4, s4, 1
+2:  mv s5, t4
+    addi t3, t3, -1
+    bnez t3, 1b
+    li t3, 16
+3:  ld t6, 0(t2)
+    addi t6, t6, -50
+    li t5, 101
+    bgeu t6, t5, fail      // the count of a value is not in 50..150
+    addi t2, t2, 8
+    addi t3, t3, -1
+    bnez t3, 3b
+    li t5, 400
+    bgeu s4, t5, fail
+
+    //    d. with only 0 and 15 permitted, 512 draws are each 0 or 15,
+    //       with 15 in 192..320 of them (a cyclic search from a counter
+    //       draws 15 for 15 of the 16 counter values),
+    li t0, 0x7FFE
+    csrw CSR_MMTAGEXCL0, t0
+    li t3, 512
+    li s4, 0               // draws of 15
+1:  gentag 5
+    slli t5, t0, 4
+    bnez t5, fail          // only the tag bits may be set
+    srli t4, t0, 60
+    beqz t4, 2f
+    li t5, 15
+    bne t4, t5, fail
+    addi s4, s4, 1
+2:  addi t3, t3, -1
+    bnez t3, 1b
+    addi s4, s4, -192
+    li t5, 129
+    bgeu s4, t5, fail
+    csrw CSR_MMTAGEXCL0, zero
+
+    //    e. with 7-bit tags, if supported, and only 3 and 100 permitted,
+    //       256 draws are each 3 or 100 (in bits 63:57), with 100 in
+    //       80..176 of them.
+    li t0, (3 << MT_MODE_SHIFT)
+    csrs CSR_MSECCFG, t0
+    csrr t1, CSR_MSECCFG
+    srli t1, t1, MT_MODE_SHIFT
+    andi t1, t1, 3
+    li t2, MT_MODE_TAG7
+    bne t1, t2, 3f
+    li t0, ~(1 << 3)       // tag values 0-63: only 3 permitted
+    csrw CSR_MMTAGEXCL0, t0
+    li t0, ~(1 << 36)      // tag values 64-127: only 100 permitted
+    csrw CSR_MMTAGEXCL1, t0
+    li t3, 256
+    li s4, 0               // draws of 100
+1:  gentag 5
+    slli t5, t0, 7
+    bnez t5, fail          // only the tag bits may be set
+    srli t4, t0, 57
+    li t5, 3
+    beq t4, t5, 2f
+    li t5, 100
+    bne t4, t5, fail
+    addi s4, s4, 1
+2:  addi t3, t3, -1
+    bnez t3, 1b
+    addi s4, s4, -80
+    li t5, 97
+    bgeu s4, t5, fail
+    csrw CSR_MMTAGEXCL0, zero
+    csrw CSR_MMTAGEXCL1, zero
+3:  li t0, (3 << MT_MODE_SHIFT)
+    csrc CSR_MSECCFG, t0
+    li t0, (MT_MODE_TAG4 << MT_MODE_SHIFT)
+    csrs CSR_MSECCFG, t0
 
     // ------------------------------------------------------------------
     // 4. addtag: in-place tag arithmetic in bits 63:60.
@@ -322,4 +417,7 @@ tag_region:
     .fill 8192, 1, 0
 data_buf:
     .fill 64, 1, 0
+// Section 3c's count of each tag value; its tags, in tag_region, are 0.
+tag_counts:
+    .fill 128, 1, 0
 #endif

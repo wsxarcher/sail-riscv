@@ -601,6 +601,10 @@ function reset_sys() -> unit = {
   // "On reset, all writable mstateen bits are initialized by the hardware to zeros."
   reset_stateen();
 
+  // Zimt: the tag generation exclusion masks reset to zero, and the
+  // pseudorandom generator of gentag to its seed.
+  reset_zimt();
+
   // TODO: Probably need to remove these vector resets too but it needs
   // refactoring anyway. See https://github.com/riscv/sail-riscv/issues/566 etc.
   // If they are kept then callbacks need to be added.
