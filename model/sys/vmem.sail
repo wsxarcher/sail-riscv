@@ -741,16 +741,17 @@ function translateAddr(
       if not(is_virtual_access) then {
         return Ok(Physaddr(gpa), vs_pbmt, ext_ptw)
       };
-      // Second stage: GPA -> SPA
+      // Second stage: GPA -> SPA. The result keeps the leaf PTE of the
+      // first stage (see ext_ptw).
       match translate_g_stage(gpa, access) {
-        Ok(spa, g_pbmt, ext_ptw)  => {
+        Ok(spa, g_pbmt, _)  => {
           // A non-zero G-stage PBMT overrides the PMAs to give the intermediate
           // attributes, then a non-zero VS-stage PBMT overrides those in turn.
           let pbmt = if vs_pbmt != PBMT_PMA then vs_pbmt else g_pbmt;
           Ok(Physaddr(spa), pbmt, ext_ptw)
         },
         // G-Stage failure
-        Err(ptw_error, ext_ptw) => Err(build_exception_context(gva, gpa, access, ptw_error, G_Stage), ext_ptw)
+        Err(ptw_error, g_ext_ptw) => Err(build_exception_context(gva, gpa, access, ptw_error, G_Stage), g_ext_ptw)
       }
     },
     // S/VS-stage failure

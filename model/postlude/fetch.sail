@@ -41,8 +41,15 @@ private function fetch_bytes forall 'n, 'n in {2, 4} . (fetch_start : xlenbits, 
   let eff_priv = effectivePrivilege(access, mstatus, cur_privilege);
 
   let (paddr, pbmt) : (physaddr, page_based_mem_type) = match translateAddr(Virtaddr(granule_start), access, eff_priv) {
-    Err(e, _)    => return FetchBytes_Exception(e),
-    Ok(paddr, pbmt, _) => (paddr, pbmt),
+    Err(e, _)    => {
+      zimt_fetch_fault();
+      return FetchBytes_Exception(e)
+    },
+    Ok(paddr, pbmt, ext_ptw) => {
+      // Zimt: whether the instruction comes from a tagcheck-exempt code page.
+      zimt_record_fetch(granule_start == fetch_start, ext_ptw);
+      (paddr, pbmt)
+    },
   };
 
   match mem_read(access, pbmt, eff_priv, paddr, width, false, false, false) {

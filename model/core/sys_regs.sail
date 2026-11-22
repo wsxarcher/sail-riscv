@@ -218,7 +218,9 @@ bitfield Mstatus : bits(64) = {
 
   MDT  : 42,
   MPELP: 41,
-
+  // Zimt (v0.2, DRAFT): with MPRV=1, MTAG_I=1 makes loads and stores
+  // unchecked
+  MTAG_I : 40,
   MPV  : 39,
   GVA  : 38,
 
@@ -260,6 +262,7 @@ private function legalize_mstatus(o : Mstatus, v : bits(64)) -> Mstatus = {
   let o = [o with
     MDT   = if currentlyEnabled(Ext_Smdbltrp) then v[MDT] else 0b0,
     MPELP = if hartSupports(Ext_Zicfilp) then v[MPELP] else 0b0,
+    MTAG_I = if hartSupports(Ext_Zimt) then v[MTAG_I] else 0b0,
     MPV   = if currentlyEnabled(Ext_H) then v[MPV] else 0b0,
     GVA   = if currentlyEnabled(Ext_H) then v[GVA] else 0b0,
     // We don't currently support changing MBE and SBE.
@@ -349,6 +352,8 @@ bitfield Hstatus : bits(64) = {
   VTW   : 21,
   VTVM  : 20,
   VGEIN : 17 .. 12,
+  // Zimt (v0.2, DRAFT): MTAG_I=1 makes HLV*/HSV* unchecked
+  MTAG_I : 10,
   HU    : 9,
   SPVP  : 8,
   SPV   : 7,
@@ -372,6 +377,7 @@ private function legalize_hstatus(h : Hstatus, v : bits(64)) -> Hstatus = {
     //  the maximum guest external interrupt number (known as GEILEN), inclusive."
     //  Being WLRL, an out-of-range value keeps the previous one.
     VGEIN = if unsigned(v[VGEIN]) <= geilen then v[VGEIN] else h[VGEIN],
+    MTAG_I = if hartSupports(Ext_Zimt) then v[MTAG_I] else 0b0,
     HU    = v[HU],
     SPVP  = v[SPVP],
     SPV   = v[SPV],

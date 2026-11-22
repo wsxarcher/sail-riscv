@@ -312,6 +312,14 @@ function trap_handler_inner(
       mtinst        = tval(excinst);
       mepc          = pc;
 
+      // Zimt: "When a trap is taken to M-mode and mtinst is written with
+      // nonzero value, then MTAG bit for code page of trapping instruction
+      // is deposited in mstatus.MTAG_I." It is set for a tagcheck-exempt
+      // code page; an instruction fetched without first-stage paging has
+      // no code page with an MTAG bit.
+      if hartSupports(Ext_Zimt) & mtinst != zeros()
+      then mstatus[MTAG_I] = bool_to_bit(zimt_code_exempt);
+
       cur_privilege = del_priv;
 
       handle_trap_extension(del_priv, pc, ext);
@@ -346,6 +354,14 @@ function trap_handler_inner(
       htval           = tval(excinfo2);
       htinst          = tval(excinst);
       sepc            = pc;
+
+      // Zimt: "When a trap is taken to HS mode and htinst is written with
+      // nonzero value, then VS-stage page table's MTAG bit on code page
+      // for trapping instruction is deposited in hstatus.MTAG_I." It is
+      // set for a tagcheck-exempt VS-stage code page; an instruction not
+      // executed in VS/VU-mode has none.
+      if hartSupports(Ext_Zimt) & currentlyEnabled(Ext_H) & htinst != zeros()
+      then hstatus[MTAG_I] = bool_to_bit(inVirtualPrivilege() & zimt_code_exempt);
 
       cur_privilege   = del_priv;
 

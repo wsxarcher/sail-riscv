@@ -32,8 +32,9 @@ function clause currentlyEnabled(Ext_Smvatag) = hartSupports(Ext_Smvatag) & curr
 //   VS   : henvcfg.MT_MODE
 //   VU   : senvcfg.MT_MODE
 // HLV*/HSV* executed from HU with effective privilege VU use
-// hstatus.VUMT_MODE instead; that case is handled by the (future)
-// HLV/HSV tag check plumbing, not here.
+// hstatus.VUMT_MODE instead, and mstatus.MTAG_I and hstatus.MTAG_I can
+// make the accesses unchecked: see zimt_access_mt_mode in
+// zimt_tag_ops.sail.
 function get_mt_mode(priv : Privilege) -> MemTaggingMode = {
   if not(currentlyEnabled(Ext_Zimt)) then return MT_MODE_Disabled;
   match priv {
@@ -50,6 +51,16 @@ function get_mt_mode(priv : Privilege) -> MemTaggingMode = {
 // behavior (see zimt_insts.sail).
 function zimt_active(priv : Privilege) -> bool =
   get_mt_mode(priv) != MT_MODE_Disabled
+
+// Whether the instruction being executed was fetched from a
+// tagcheck-exempt code page, "a page translated using page tables with
+// MTAG bit set and execute permission bit set in first stage page
+// tables". An instruction that spans two pages is only if both are: "An
+// instruction straddling between tagcheck-exempt code page and normal
+// code page is assumed to be fetched from normal code page". Without
+// first-stage paging there are no such pages. Instruction fetch sets it
+// (zimt_record_fetch in zimt_tag_ops.sail).
+register zimt_code_exempt : bool = false
 
 // ---------------------------------------------------------------------
 // !!! PLACEHOLDER CSR ADDRESSES - TG ALLOCATION NEEDED !!!

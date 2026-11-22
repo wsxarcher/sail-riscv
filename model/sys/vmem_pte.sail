@@ -29,7 +29,12 @@ bitfield PTE_Ext : pte_ext_bits = {
   PBMT       : 8 .. 7,
   // Svrsw60t59b: Additional reserved-for-software bits
   RSW_60t59b : 6 .. 5,
-  reserved   : 4 .. 0,
+  // Zimt (v0.2, DRAFT): memory tag bit of first-stage leaf PTEs.
+  // !!! PLACEHOLDER POSITION: the draft specification has not fixed the
+  // bit; 58 is the highest one still reserved for future standard use
+  // (bits 60-59 are Svrsw60t59b's).
+  MTAG       : 4,
+  reserved   : 3 .. 0,
 }
 
 //
@@ -113,6 +118,10 @@ private function pte_is_invalid(pte_flags : PTE_Flags, pte_ext : PTE_Ext, stage 
                                         | (stage == VS_Stage & read_henvcfg()[PBMTE] == 0b0)
                                         | not(page_based_mem_type_forwards_matches(pte_ext[PBMT])))
     | pte_ext[RSW_60t59b] != zeros() & not(currentlyEnabled(Ext_Svrsw60t59b))
+    // Zimt "introduces memory tag (MTAG) bit in first stage page table";
+    // a hart without memory tagging enabled ignores it, so it is only
+    // reserved without Zimt and in G-stage PTEs.
+    | pte_ext[MTAG]       != zeros() & (stage == G_Stage | not(currentlyEnabled(Ext_Zimt)))
     // Reserved bits are reserved even for leaf PTEs.
     | pte_ext[reserved] != zeros()
   )
@@ -136,7 +145,7 @@ union PTE_Check = {
 }
 
 // This assumes that the PTE is valid; i.e. `pte_is_invalid` has been checked before
-// calling this function.
+// calling this function. It is only called with leaf PTEs.
 private function check_PTE_permission(
   access    : MemoryAccessType(mem_payload),
   priv      : Privilege,
@@ -146,13 +155,22 @@ private function check_PTE_permission(
   // permit Supervisor User Memory access
   do_sum    : bool,
   pte_flags : PTE_Flags,
-  _ext      : PTE_Ext,
-  _ext_ptw  : ext_ptw
+  ext       : PTE_Ext,
+  ext_ptw   : ext_ptw
 ) -> PTE_Check = {
   let pte_U = bit_to_bool(pte_flags[U]);
   let pte_R = bit_to_bool(pte_flags[R]);
   let pte_W = bit_to_bool(pte_flags[W]);
   let pte_X = bit_to_bool(pte_flags[X]);
+
+  // Zimt: a successful translation returns the attributes of the leaf PTE
+  // of its first stage.
+  let ext_ptw_ok : ext_ptw = if stage == G_Stage then ext_ptw else struct {
+    first_stage_leaf = true,
+    pte_mtag         = ext[MTAG] == 0b1,
+    pte_x            = pte_X,
+    pte_u            = pte_U,
+  };
 
   // We assume a valid PTE, so a writable page is either also readable or it is
   // the write only shadow stack encoding (R=0, W=1, X=0). Any other write only
@@ -169,7 +187,7 @@ private function check_PTE_permission(
     VirtualUser => pte_U,
     VirtualSupervisor => not(pte_U) | (do_sum & is_load_store(access)),
   };
-  if not(priv_ok) then return PTE_Check_Failure((), PTE_No_Permission());
+  if not(priv_ok) then return PTE_Check_Failure(ext_ptw, PTE_No_Permission());
 
   // Step 7 of VATP (see vmem.sail).
 
@@ -180,7 +198,7 @@ private function check_PTE_permission(
   // guest-page-fault is raised.
   if stage == G_Stage then {
     if is_shadow_stack_access(access) & not(pte_R & pte_W)
-    then return PTE_Check_Failure((), PTE_No_Permission());
+    then return PTE_Check_Failure(ext_ptw, PTE_No_Permission());
   } else if not(pte_R) & pte_W & not(pte_X) then {
     // Since we assume a valid PTE: this encoding is only valid when menvcfg[SSE] is 1.
     assert(bool_bit(menvcfg[SSE]));
@@ -227,18 +245,18 @@ private function check_PTE_permission(
       Atomic(_, _, _, rp, wp)        => internal_error(__FILE__, __LINE__, "Invalid payloads (" ^ mem_payload_name(rp) ^ ", " ^ mem_payload_name(wp) ^ ") for Atomic."),
 
     };
-    if not(shadow_stack_ok) then return PTE_Check_Failure((), PTE_No_Access());
+    if not(shadow_stack_ok) then return PTE_Check_Failure(ext_ptw, PTE_No_Access());
 
     match access {
       // The `X` check for `HLVX.*` instructions was deferred above.
       // This is part of the permission checks of Step 8, but hoisted
       // here to apply to shadow-stack pages.
-      LoadExecute(Data) => return PTE_Check_Failure((), PTE_No_Permission()),
+      LoadExecute(Data) => return PTE_Check_Failure(ext_ptw, PTE_No_Permission()),
       // On a shadow stack page the rules above fully decide the access. The R, W
       // and X bits do not apply because the encoding is R=0 W=1 X=0, so grant the
       // access here rather than falling through to the normal permission check,
       // which would reject any load or atomic because the page is not readable.
-      _                 => return PTE_Check_Success(()),
+      _                 => return PTE_Check_Success(ext_ptw_ok),
     }
   } else if is_shadow_stack_access(access) then {
     // "Should a shadow stack instruction access a page that is not designated
@@ -247,7 +265,7 @@ private function check_PTE_permission(
     // being accessed by a shadow stack instruction is a read-only page, a
     // store/AMO page-fault exception will be triggered."
     let is_read_only = pte_R & not(pte_W) & not(pte_X);
-    return PTE_Check_Failure((), if is_read_only then PTE_No_Permission() else PTE_No_Access());
+    return PTE_Check_Failure(ext_ptw, if is_read_only then PTE_No_Permission() else PTE_No_Access());
   };
 
   // Step 8 of VATP (see vmem.sail).
@@ -298,9 +316,9 @@ private function check_PTE_permission(
     // cache block is UNSPECIFIED."
     CacheAccess(CB_manage(_))   => pte_R | pte_W,
   };
-  if not(access_ok) then return PTE_Check_Failure((), PTE_No_Permission());
+  if not(access_ok) then return PTE_Check_Failure(ext_ptw, PTE_No_Permission());
 
-  PTE_Check_Success(())
+  PTE_Check_Success(ext_ptw_ok)
 }
 
 // Whether hardware updates the PTE A/D bits for this stage. If neither Svadu

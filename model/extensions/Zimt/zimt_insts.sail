@@ -144,9 +144,8 @@ function clause execute SETTAG(imm, rs1) = {
   // Strip the pointer tag via the pointer-masking transform; the
   // first chunk is at the 16-byte aligned address.
   let va = bits_of(transform_effective_address(Virtaddr(raw), default_access_info(Store(Data))));
-  let chunk0 = va >> 4;
   foreach (i from 0 to unsigned(imm)) {
-    match zimt_store_mc_tag(vitt, chunk0 + to_bits(xlen, i), mc_tag, mode) {
+    match zimt_store_mc_tag(vitt, zimt_chunk(va, i), mc_tag, mode) {
       Err(e) => return e,
       Ok(()) => (),
     }
@@ -168,9 +167,8 @@ function clause execute CHECKTAG(imm, rs1) = {
   let va = bits_of(transform_effective_address(Virtaddr(raw), default_access_info(Load(Data))));
   // checktag checks whole chunks: chunk_count + 1 chunks of 16 bytes
   // starting at the chunk containing va.
-  let chunk0 = va >> 4;
   foreach (i from 0 to unsigned(imm)) {
-    match zimt_load_mc_tag(vitt, chunk0 + to_bits(xlen, i), mode, false) {
+    match zimt_load_mc_tag(vitt, zimt_chunk(va, i), mode, default_access_info(Load(Tag)), false) {
       Err(e) => return e,
       Ok(mc_tag) => if mc_tag != expected then return trap(make_mem_tag_exception(false)),
     }

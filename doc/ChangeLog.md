@@ -11,10 +11,13 @@
   - Zvl2048b, Zvl4096b, Zvl8192b, Zvl16384b, Zvl32768b, and Zvl65536b
 
 - The following unratified extensions have been added:
-  - Zimt (with Svatag/Smvatag), partial: instructions, CSRs and
-    implicit tag checks without first-stage paging (satp, or vsatp
-    at V=1, whatever hgatp is); CSR addresses are placeholders
-    pending allocation by the memory tagging TG
+  - Zimt (with Svatag/Smvatag), partial: instructions, CSRs, and
+    implicit tag checks of scalar loads and stores and of HLV/HSV,
+    with and without first-stage paging (PTE.MTAG, tagcheck-exempt
+    code pages, mstatus.MTAG_I and hstatus.MTAG_I); not yet of vector,
+    LR/SC and AMO accesses. CSR addresses and the PTE.MTAG position
+    (bit 58) are placeholders pending allocation by the memory
+    tagging TG
 
 - Updates to the [configuration file](../config/config.json.in):
   - The supported Zimt pointer tag widths can be specified, see

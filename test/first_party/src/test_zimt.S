@@ -41,6 +41,7 @@
 
 #define CAUSE_BREAKPOINT     3
 #define CAUSE_LOAD_ACCESS    5
+#define CAUSE_STORE_ACCESS   7
 #define CAUSE_SOFTWARE_CHECK 18
 #define SWCHECK_TVAL_MEM_TAG 4
 
@@ -352,6 +353,53 @@ main:
     li t3, MSTATUS_GVA
     and t3, s5, t3
     bnez t3, fail
+    //    e. chunk indexes wrap around like addresses: with pointer
+    //       masking off (the pointer tag, 15, is part of the address),
+    //       settag and checktag of the last chunk (0x0FFFFFFFFFFFFFFF)
+    //       and chunk 0, and a load and a store over both, access the
+    //       tag of the last chunk, which mvitt puts in the last byte of
+    //       the first page of tag_region, and then that of chunk 0, at
+    //       mvitt, outside memory: an access fault on it (store/AMO for
+    //       settag), after settag has set the first one.
+    csrr s7, CSR_MVITT
+    li t3, (3 << PMM_SHIFT)
+    csrc CSR_MSECCFG, t3
+    la t3, tag_region
+    li t4, 0xFFF
+    add t3, t3, t4
+    mv a5, sp
+    mv sp, t3
+    sb zero, 0(sp)         // the tag byte of the last chunk, not checked
+    mv sp, a5
+    la a3, tag_region
+    li t3, 0xF800000000001000
+    add a3, a3, t3         // mvitt
+    csrw CSR_MVITT, a3
+    li a2, -16             // the last chunk
+    li s2, 0
+    settag 12, 1           // a2
+    li t3, CAUSE_STORE_ACCESS
+    bne s2, t3, fail
+    bne s3, a3, fail
+    li s2, 0
+    checktag 12, 1         // a2: the tag of the last chunk is 15
+    li t3, CAUSE_LOAD_ACCESS
+    bne s2, t3, fail
+    bne s3, a3, fail
+    li a2, -4              // 8 bytes over the last chunk and chunk 0
+    li s2, 0
+    ld t4, 0(a2)
+    li t3, CAUSE_LOAD_ACCESS
+    bne s2, t3, fail
+    bne s3, a3, fail
+    li s2, 0
+    sd t4, 0(a2)
+    li t3, CAUSE_LOAD_ACCESS
+    bne s2, t3, fail
+    bne s3, a3, fail
+    csrw CSR_MVITT, s7
+    li t3, (PMM_PMLEN_7 << PMM_SHIFT)
+    csrs CSR_MSECCFG, t3
 
     csrw mtvec, s10
 

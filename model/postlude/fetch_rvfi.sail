@@ -26,8 +26,11 @@ private function rvfi_fetch() -> FetchResult = {
   let eff_priv = effectivePrivilege(access, mstatus, cur_privilege);
 
   match translateAddr(Virtaddr(PC), access, eff_priv) {
-    Err(e, _)   => return F_Error(e),
-    Ok(_, _, _) => (),
+    Err(e, _)         => {
+      zimt_fetch_fault();
+      return F_Error(e)
+    },
+    Ok(_, _, ext_ptw) => zimt_record_fetch(true, ext_ptw),
   };
 
   let i = rvfi_instruction[rvfi_insn];
@@ -44,7 +47,13 @@ private function rvfi_fetch() -> FetchResult = {
   };
 
   match translateAddr(Virtaddr(PC_hi), access, eff_priv) {
-    Err(e, _)   => F_Error({ e with excinfo = PC }),
-    Ok(_, _, _) => F_Base(i)
+    Err(e, _)         => {
+      zimt_fetch_fault();
+      F_Error({ e with excinfo = PC })
+    },
+    Ok(_, _, ext_ptw) => {
+      zimt_record_fetch(false, ext_ptw);
+      F_Base(i)
+    }
   }
 }

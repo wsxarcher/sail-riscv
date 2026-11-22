@@ -38,8 +38,23 @@
 // (e.g., PTW_Ext_Error) and existing (e.g., PTW_Invalid_PTE) PTW_Error
 // values.
 
-type ext_ptw = unit
-let init_ext_ptw : ext_ptw = ()
+// Zimt (v0.2, DRAFT): the leaf PTE of the first translation stage (the
+// S or VS stage) of an access, whose MTAG and X bits define
+// tagged-data and tagcheck-exempt code pages, and whose U bit tells
+// supervisor accesses to user pages apart. check_PTE_permission records
+// it, and translateAddr returns it; the G stage records nothing.
+struct ext_ptw = {
+  first_stage_leaf : bool,  // the first stage translated with a leaf PTE
+  pte_mtag         : bool,  // its MTAG bit
+  pte_x            : bool,  // its X bit
+  pte_u            : bool,  // its U bit
+}
+let init_ext_ptw : ext_ptw = struct {
+  first_stage_leaf = false,
+  pte_mtag         = false,
+  pte_x            = false,
+  pte_u            = false,
+}
 
 type ext_ptw_fail = unit
 
