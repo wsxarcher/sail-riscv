@@ -12,12 +12,12 @@
 
 - The following unratified extensions have been added:
   - Zimt (with Svatag/Smvatag), partial: instructions, CSRs, and
-    implicit tag checks of scalar loads and stores and of HLV/HSV,
-    with and without first-stage paging (PTE.MTAG, tagcheck-exempt
-    code pages, mstatus.MTAG_I and hstatus.MTAG_I); not yet of vector,
-    LR/SC and AMO accesses. CSR addresses and the PTE.MTAG position
-    (bit 58) are placeholders pending allocation by the memory
-    tagging TG
+    implicit tag checks of scalar loads and stores, HLV/HSV, LR/SC,
+    AMOs, cbo.zero and vector loads and stores, with and without
+    first-stage paging (PTE.MTAG, tagcheck-exempt code pages,
+    mstatus.MTAG_I and hstatus.MTAG_I); not yet the protection of the
+    tag table range. CSR addresses and the PTE.MTAG position (bit 58)
+    are placeholders pending allocation by the memory tagging TG
 
 - Updates to the [configuration file](../config/config.json.in):
   - The supported Zimt pointer tag widths can be specified, see

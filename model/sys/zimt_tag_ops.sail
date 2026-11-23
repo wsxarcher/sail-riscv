@@ -217,12 +217,28 @@ function zimt_tagged_data_page(page : ext_ptw, eff_priv : Privilege) -> bool =
 // ---------------------------------------------------------------------
 // Implicit tag checks on regular loads/stores.
 //
-// When memory tagging is active for a regular Data load/store (scalar
-// integer and floating-point loads and stores, and HLV*/HSV*;
-// zimt_access_mt_mode gives its MT_MODE), it is checked unless it is
-// performed via the stack pointer (x2) or by an instruction from a
-// tagcheck-exempt code page ("Instructions fetched from tagcheck-exempt
-// code page always generate unchecked memory accesses"), as follows:
+// Regular loads and stores are those that an instruction other than
+// settag and checktag generates ("Regular load and regular store memory
+// operations are generated from an instruction (except settag and
+// checktag) defined by ISA to perform memory accesses"), with the scope
+// of the explicit memory accesses of pointer masking: scalar integer and
+// floating-point loads and stores, LR/SC, AMOs, the element accesses of
+// vector loads and stores, the store operations of cbo.zero (its whole
+// cache block), and HLV*/HSV*. A failing SC is checked like a store, as
+// its memory permission checks are made ("For the purposes of memory
+// protection, a failed SC.W may be treated like a store"). Not checked:
+// HLVX* (they "always generate unchecked loads"), prefetches (hints that
+// perform no memory access), cbo.clean, cbo.flush and cbo.inval (cache
+// block operations, not loads or stores), shadow stack accesses (to
+// shadow stack pages, whose -W- permission is not that of a regular
+// access) and the tag accesses themselves.
+//
+// When memory tagging is active for a regular access
+// (zimt_access_mt_mode gives its MT_MODE), it is checked unless it is
+// performed via the stack pointer (x2) as the base register or by an
+// instruction from a tagcheck-exempt code page ("Instructions fetched
+// from tagcheck-exempt code page always generate unchecked memory
+// accesses"), as follows:
 //
 // * If its first-stage address translation (satp, or vsatp for VS/VU,
 //   at its effective privilege) is Bare, every data page is a
@@ -244,18 +260,28 @@ function zimt_tagged_data_page(page : ext_ptw, eff_priv : Privilege) -> bool =
 //
 // The tag loads have the translation context of the access (HLV*/HSV*:
 // vsvitts or vsvittu as the tag table, two-stage translation and GVA).
+// With first-stage paging, an LR/SC or AMO over two pages is not checked:
+// the model never splits it, and it faults without accessing memory.
+// A vector instruction checks each element access, in element order, so
+// a mismatch or tag load fault traps with vstart at that element, or
+// trims vl at an element after the first one of a fault-only-first load.
 //
-// TODO: vector/LR/SC/AMO accesses are not checked yet.
 // The val declaration (with the type) is in vmem_utils.sail, where
-// vmem_read_explicit/vmem_write_explicit invoke this hook.
+// vmem_read_explicit/vmem_write_explicit invoke this hook; the AMOs and
+// cbo.zero, which do not use them, invoke it themselves.
 function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, trigger_payload) = {
   if not(currentlyEnabled(Ext_Zimt)) then return None();
-  // Only regular data loads/stores are checked (vector/LR/SC/AMO: TODO).
-  // HLVX* use LoadExecute: they "always generate unchecked loads".
+  // Only regular data loads/stores are checked. HLVX* use LoadExecute.
   let checked_kind : bool = match access {
-    Load(Data)  => true,
-    Store(Data) => true,
-    _           => false,
+    Load(Data)                   => true,
+    Store(Data)                  => true,
+    LoadReserved(_, _, Data)     => true,
+    StoreConditional(_, _, Data) => true,
+    Atomic(_, _, _, Data, Data)  => true,
+    Load(Vector)                 => true,
+    Store(Vector)                => true,
+    CacheAccess(CB_zero())       => true,
+    _                            => false,
   };
   if not(checked_kind) then return None();
   // "Memory accesses performed using the stack pointer (x2) as the
@@ -288,9 +314,23 @@ function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, 
     else satp_mode(eff_priv) != Bare;
   if not(first_stage_paging) then return zimt_check_chunks(vitt, va, last, expected, mode, access_info);
 
-  if not(is_aligned_addr(vaddr, width)) & is_some(plat_misaligned_exception(access, false)) then return None();
-  let (lo_bytes, hi_bytes) = split_on_page_boundary(va, width);
-  let va1 = va + to_bits(xlen, lo_bytes);
+  // A misaligned exception (with the setting of LR/SC for them) comes
+  // before the translation, as in vmem_read_addr/vmem_write_addr and the
+  // AMOs.
+  let res = is_load_reserved(access) | is_store_conditional(access);
+  if not(is_aligned_addr(vaddr, width)) & is_some(plat_misaligned_exception(access, res)) then return None();
+  // The bytes of the access in its first page and in the next one.
+  let to_page_end : int = 2 ^ pagesize_bits - unsigned(va[pagesize_bits - 1 .. 0]);
+  let (lo_bytes, hi_bytes) : (int, int) = if width <= to_page_end then (width, 0)
+                                          else (to_page_end, width - to_page_end);
+  // LR/SC and AMOs are never split: they translate their first page only
+  // and are performed only within their misaligned atomicity granule (at
+  // most a page), so one that crosses a page raises the fault of that
+  // translation or its misaligned exception, and accesses no byte. It is
+  // not checked, like a misaligned access whose exception precedes its
+  // translation, and its next page is not translated (no A/D update).
+  if hi_bytes != 0 & (res | is_amo_access(access)) then return None();
+  let va1 = va + to_bits_truncate(xlen, lo_bytes);
   // The pages are translated in the order of the split access of
   // vmem_read_addr/vmem_write_addr, so that with Svadu the A/D updates
   // are those of the access when one of its pages faults. A store that

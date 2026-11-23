@@ -83,6 +83,14 @@ function clause execute AMO(op, aq, rl, rs2, rs1, width, rd) = {
     Ext_DataAddr_OK(vaddr) => vaddr,
   };
 
+  // Zimt: perform the implicit tag check, if one applies. X(rs1) carries
+  // the pointer_tag in its masked bits.
+  match zimt_implicit_check(rs1, X(rs1), vaddr, width, access, access_info,
+                            TriggerAddress(TriggerAddress_AMO, bits_of(vaddr), width)) {
+    Some(e) => return e,
+    None()  => (),
+  };
+
   // AMO addresses are always available for triggers.  Trigger address
   // matches have higher priority than Load/SAMO misaligned exceptions
   // and data memory protection faults. An AMO is considered as both a

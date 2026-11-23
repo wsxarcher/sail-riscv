@@ -42,6 +42,15 @@ function clause execute ZICBOZ(rs1) = {
     Ext_DataAddr_Error(e) => Ext_DataAddr_Check_Failure(e),
     Ext_DataAddr_OK(vaddr) => {
 
+      // Zimt: the store operations of the whole cache block are regular
+      // stores, so perform the implicit tag check, if one applies.
+      // X(rs1) carries the pointer_tag in its masked bits.
+      match zimt_implicit_check(rs1, rs1_val + negative_offset, vaddr, cache_block_size, access, access_info,
+                                TriggerAddress(TriggerAddress_Store, bits_of(vaddr), cache_block_size)) {
+        Some(e) => return e,
+        None()  => (),
+      };
+
       // Triggers match on the addresses in the whole cache block.
       match match_memory_trigger_before(cur_privilege, TriggerAddress(TriggerAddress_Store, bits_of(vaddr), cache_block_size), access_is_gva(access_info)) {
         Some(pti) => return PendingTrigger(pti),

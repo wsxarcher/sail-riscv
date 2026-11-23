@@ -4,7 +4,8 @@
 // tagging extension (v0.2, DRAFT) with first-stage paging: PTE.MTAG,
 // tagged-data and tagcheck-exempt code pages, the straddle rules,
 // supervisor accesses to user pages, mstatus.MTAG_I and hstatus.MTAG_I,
-// and HLV*/HSV*/HLVX*.
+// HLV*/HSV*/HLVX*, and the AMOs, LR/SC, cbo.zero and vector accesses
+// (an AMO over two pages, which is never split, is not checked).
 //
 // Runs in M-mode, and in S, U, HS, HU and VS-mode for what MPRV cannot
 // do (instruction fetches, HLV* in HS/HU-mode). Memory tagging uses
@@ -99,6 +100,9 @@
 .endm
 .macro settag rs1, imm4
   .4byte ((0x41 << 25) | (\imm4 << 20) | (\rs1 << 15) | (0x4 << 12) | 0x73)
+.endm
+.macro cbo_zero rs1
+  .4byte ((4 << 20) | (\rs1 << 15) | (2 << 12) | 0x0F)
 .endm
 
 // reg = va with pointer tag `tag`
@@ -978,6 +982,101 @@ main:
     expect_none
     set_tag tag_s, (VA_N + 0xFF0), 0
     set_tag tag_s, VA_T, 0
+
+    // ------------------------------------------------------------------
+    // 14. AMOs, LR/SC, cbo.zero and vector loads and stores at effective
+    //     privilege S: through a mismatching pointer, in a tagged-data
+    //     page each raises a software-check exception and is not
+    //     performed; in a page without MTAG none is checked.
+    li t0, MSTATUS_VS
+    csrs mstatus, t0
+    vsetivli t0, 2, e64, m1, ta, ma
+    la t0, page_a
+    li t4, -1
+    sd t4, 0(t0)
+    ptr t1, VA_A, 5
+    li t2, 7
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    mprv_off
+    expect_swcheck 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.d t4, (t1)
+    mprv_off
+    expect_swcheck 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    sc.d t4, t2, (t1)
+    mprv_off
+    expect_swcheck 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    cbo_zero 6
+    mprv_off
+    expect_swcheck 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vle64.v v2, (t1)
+    mprv_off
+    expect_swcheck 0
+    vmv.v.i v2, 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vse64.v v2, (t1)
+    mprv_off
+    expect_swcheck 0
+    la t0, page_a
+    ld t4, 0(t0)
+    li t5, -1
+    bne t4, t5, fail
+    sd zero, 0(t0)
+    ptr t1, VA_B, 5
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    lr.d t4, (t1)
+    sc.d t4, t2, (t1)
+    cbo_zero 6
+    vle64.v v2, (t1)
+    vse64.v v2, (t1)
+    mprv_off
+    expect_none
+
+    // ------------------------------------------------------------------
+    // 15. LR/SC and AMOs are never split: an AMO over the page without
+    //     MTAG and the tagged-data page translates its first page only
+    //     and raises its misaligned exception (a store/AMO access fault,
+    //     as it is outside its 16-byte misaligned atomicity granule). It
+    //     is not checked, though the first chunk of the next page has a
+    //     mismatching tag, and stores no byte.
+    li t0, VITT_S
+    csrw CSR_SVITTS, t0
+    set_tag tag_s, (VA_N + 0xFF0), 5
+    set_tag tag_s, VA_T, 0
+    la t0, page_b
+    li t2, 0xFF8
+    add t0, t0, t2
+    sd zero, 0(t0)
+    la t0, page_a2
+    sd zero, 0(t0)
+    ptr t1, (VA_N + 0xFFC), 5
+    li t2, 7
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    mprv_off
+    expect_trap CAUSE_STORE_ACCESS, (VA_N + 0xFFC)
+    la t0, page_b
+    li t2, 0xFF8
+    add t0, t0, t2
+    ld t4, 0(t0)
+    bnez t4, fail
+    la t0, page_a2
+    ld t4, 0(t0)
+    bnez t4, fail
+    set_tag tag_s, (VA_N + 0xFF0), 0
 
 pass:
     call cleanup

@@ -413,8 +413,10 @@ function vmem_write_tag_rmw(vaddr : virtaddr, data : bits(8), access_info : Acce
 
 // Zimt implicit tag check hook; defined in zimt_tag_ops.sail, which
 // must follow this file in the module since it uses vmem_read_addr.
-// The last argument is the trigger payload of the data access.
-val zimt_implicit_check : forall 'width, is_mem_width('width).
+// The last argument is the trigger payload of the data access. The
+// width is that of the whole access: up to 16 bytes for an AMO, and a
+// cache block for cbo.zero.
+val zimt_implicit_check : forall 'width, 0 < 'width <= max_mem_access.
   (regidx, xlenbits, virtaddr, int('width), MemoryAccessType(mem_payload), AccessInfo, MemoryTriggerPayload)
   -> option(ExecutionResult)
 
