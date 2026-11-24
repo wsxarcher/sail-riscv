@@ -24,7 +24,8 @@
   - The supported Zimt pointer tag widths can be specified, see
     `extensions.Zimt.supported_pointer_tag_width_4` and
     `extensions.Zimt.supported_pointer_tag_width_7` (width 4 is
-    mandatory when Zimt is supported).
+    mandatory when Zimt is supported). Svatag depends on Svukte:
+    `extensions.Svatag.supported` requires `extensions.Svukte.supported`.
   - The WARL behavior of a reserved or unimplemented encoding written to `mstatus.MPP`
     can now map to the least-privileged implemented mode or keep the previous
     legal value; see `base.reserved_behavior.illegal_privilege`.

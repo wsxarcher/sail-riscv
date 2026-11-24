@@ -7,7 +7,10 @@
 // HLV*/HSV*/HLVX*, and the AMOs, LR/SC, cbo.zero and vector accesses
 // (an AMO over two pages, which is never split, is not checked), and the
 // protection of tag storage (Svatag): the access faults of regular
-// accesses and settag in the VITT range of their privilege (section 16).
+// accesses and settag in the VITT range of their privilege (section 16),
+// and Svukte, which Svatag depends on: the tag accesses of U and VU-mode
+// are Svukte-qualified, so with senvcfg.UKTE (hstatus.HUKTE for HLV* in
+// HU-mode) a tag table in the upper half raises page faults (section 17).
 //
 // Runs in M-mode, and in S, U, HS, HU and VS-mode for what MPRV cannot
 // do (instruction fetches, HLV* in HS/HU-mode). Memory tagging uses
@@ -132,6 +135,16 @@
 #define CSR_MVITT        0x7C4
 #define VITT_SIZE        0x200000000
 #define VITT_SIZE7       0x400000000
+// Section 17: root[ROOT_UP] maps the test pages again in the upper half
+// (UPPER + TVA), and svittu (vsvittu) = VITT_U_UP puts the tag of VA v
+// of the test pages in the upper alias of tag_u, that of VA_D + 0x40 at
+// TAG_UP_TVAL. senvcfg.UKTE and hstatus.HUKTE are the Svukte enables.
+#define UPPER            0xFFFFFFC000000000
+#define ROOT_UP          259
+#define VITT_U_UP        (VITT_U + UPPER)
+#define TAG_UP_TVAL      (VA_TU_ALIAS + UPPER + TAG_OFF(VA_D + 0x40))
+#define ENVCFG_UKTE      (1 << 8)
+#define HSTATUS_HUKTE    (1 << 24)
 
 .macro checktag rs1, imm4
   .4byte ((0x43 << 25) | (\imm4 << 20) | (\rs1 << 15) | (0x4 << 12) | 0x73)
@@ -249,6 +262,17 @@
 .macro expect_canary reg
     li t5, RD_CANARY
     bne \reg, t5, fail
+.endm
+// Section 17: the 4-bit memory tag of the chunk of `va` in tag_u is `tag`.
+.macro expect_tag_u va, tag
+    la t0, tag_u
+    lbu t2, TAG_OFF(\va)(t0)
+    .if ((\va >> 4) & 1)
+    srli t2, t2, 4
+    .endif
+    andi t2, t2, 0xF
+    li t5, \tag
+    bne t2, t5, fail
 .endm
 .macro expect_swcheck gva
     expect_trap CAUSE_SOFTWARE_CHECK, SWCHECK_TVAL_MEM_TAG
@@ -1839,6 +1863,202 @@ main:
     csrw CSR_SVITTS, t0
     li t0, VITT_U
     csrw CSR_SVITTU, t0
+
+    // ------------------------------------------------------------------
+    // 17. Svatag depends on Svukte, and thus assumes an even split of the
+    //     address space: U and VU-mode have the lower half, S, HS and
+    //     VS-mode the upper half (the VITT ranges of section 16). The tag
+    //     accesses of the U and VU-mode loads, stores, checktag and settag
+    //     are explicit accesses, which Svukte qualifies: with senvcfg.UKTE
+    //     (hstatus.HUKTE for HLV*/HSV* in HU-mode), one in the upper half
+    //     raises the page fault of its kind (load for a tag load, store/AMO
+    //     for settag) with the tag address, so the tag table of U-mode must
+    //     be in the lower half; without it, it is performed. root[259] maps
+    //     the test pages again in the upper half (UPPER + TVA), and
+    //     svittu = VITT_U_UP puts the tags of VA_D in the upper alias of
+    //     tag_u. All traps go to M-mode (section 16).
+    la t1, root_table
+    li t2, ROOT_UP * 8
+    add t1, t1, t2
+    la t0, l1_table
+    srli t0, t0, RISCV_PGSHIFT
+    slli t0, t0, PTE_PPN_SHIFT
+    ori t0, t0, PTE_V
+    sd t0, 0(t1)
+    sfence.vma
+    li t0, VITT_U_UP
+    csrw CSR_SVITTU, t0
+    set_tag tag_u, (VA_D + 0x40), 3
+    la t0, page_d
+    ld a5, 0x40(t0)
+    //  a. U-mode: without UKTE, checktag, a load and settag (of tag 7) are
+    //     performed; with it, they raise the load and the store/AMO page
+    //     fault at the tag address, and settag stores no tag; with svittu in
+    //     the lower half the load is performed.
+    li t0, ENVCFG_UKTE
+    csrc CSR_SENVCFG, t0
+    ptr t1, (VA_D + 0x40), 3
+    li s2, 0
+    run (VA_UC + CODE_CHECKTAG), 0
+    expect_none
+    li t4, RD_CANARY
+    run (VA_UC + CODE_LD), 0
+    expect_none
+    bne t4, a5, fail
+    ptr t1, (VA_D + 0x40), 7
+    run (VA_UC + CODE_SETTAG), 0
+    expect_none
+    expect_tag_u (VA_D + 0x40), 7
+    li t0, ENVCFG_UKTE
+    csrs CSR_SENVCFG, t0
+    run (VA_UC + CODE_CHECKTAG), 0
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    li s2, 0
+    li t4, RD_CANARY
+    run (VA_UC + CODE_LD), 0
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    expect_canary t4
+    ptr t1, (VA_D + 0x40), 3
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), 0
+    expect_trap CAUSE_STORE_PAGE_FAULT, TAG_UP_TVAL
+    expect_tag_u (VA_D + 0x40), 7
+    li t0, VITT_U
+    csrw CSR_SVITTU, t0
+    ptr t1, (VA_D + 0x40), 7
+    li s2, 0
+    run (VA_UC + CODE_LD), 0
+    expect_none
+    bne t4, a5, fail
+    //     A load of the upper alias of VA_D: with UKTE, the page fault of
+    //     the access itself (before its tag check); without it, a page
+    //     fault at its tag address, which is not canonical: the tag table
+    //     of U-mode holds the tags of the lower half only.
+    li t1, (VA_D + UPPER + 0x40)
+    li s2, 0
+    run (VA_UC + CODE_LD), 0
+    expect_trap CAUSE_LOAD_PAGE_FAULT, (VA_D + UPPER + 0x40)
+    li t0, ENVCFG_UKTE
+    csrc CSR_SENVCFG, t0
+    li s2, 0
+    run (VA_UC + CODE_LD), 0
+    expect_trap CAUSE_LOAD_PAGE_FAULT, (VA_TU_ALIAS + TAG_OFF(VA_D + 0x40) + VITT_S_OFF)
+    //  b. Effective privilege U (MPRV): with UKTE, a load raises the load
+    //     page fault at the tag address in the upper half; without it, it
+    //     is performed.
+    li t0, VITT_U_UP
+    csrw CSR_SVITTU, t0
+    li t0, ENVCFG_UKTE
+    csrs CSR_SENVCFG, t0
+    ptr t1, (VA_D + 0x40), 7
+    li s2, 0
+    li t4, RD_CANARY
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    expect_canary t4
+    li t0, ENVCFG_UKTE
+    csrc CSR_SENVCFG, t0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    bne t4, a5, fail
+    //  c. VU-mode (vsatp with the same tables, hgatp = Bare), with
+    //     vsvittu = VITT_U_UP: with senvcfg.UKTE, a load and settag raise
+    //     the page faults at the tag address, with GVA = 1; without it, the
+    //     load is performed.
+    csrw hgatp, zero
+    la t0, root_table
+    srli t0, t0, RISCV_PGSHIFT
+    li t1, SATP_MODE_SV39
+    slli t1, t1, 60
+    or t0, t0, t1
+    csrw vsatp, t0
+    hfence.gvma
+    hfence.vvma
+    li t0, VITT_U_UP
+    csrw CSR_VSVITTU, t0
+    li t0, ENVCFG_UKTE
+    csrs CSR_SENVCFG, t0
+    ptr t1, (VA_D + 0x40), 7
+    li s2, 0
+    li t4, RD_CANARY
+    run (VA_UC + CODE_LD), MSTATUS_MPV
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    li t5, 1
+    bne s5, t5, fail
+    expect_canary t4
+    ptr t1, (VA_D + 0x40), 3
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), MSTATUS_MPV
+    expect_trap CAUSE_STORE_PAGE_FAULT, TAG_UP_TVAL
+    li t5, 1
+    bne s5, t5, fail
+    expect_tag_u (VA_D + 0x40), 7
+    li t0, ENVCFG_UKTE
+    csrc CSR_SENVCFG, t0
+    ptr t1, (VA_D + 0x40), 7
+    li s2, 0
+    run (VA_UC + CODE_LD), MSTATUS_MPV
+    expect_none
+    bne t4, a5, fail
+    //  d. HLV* in HU-mode (hstatus.HU, SPVP = 0, VUMT_MODE and HUPMM) use
+    //     hstatus.HUKTE, not senvcfg.UKTE: with HUKTE, hlv.d raises the load
+    //     page fault at the tag address, with GVA = 1; with UKTE alone, it is
+    //     performed.
+    li t0, HSTATUS_SPVP | HSTATUS_MTAG_I
+    csrc hstatus, t0
+    li t0, HSTATUS_HU | HSTATUS_VUMT | HSTATUS_HUPMM | HSTATUS_HUKTE
+    csrs hstatus, t0
+    li s2, 0
+    li t4, RD_CANARY
+    run (VA_UC + CODE_HLV), 0
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    li t5, 1
+    bne s5, t5, fail
+    expect_canary t4
+    li t0, HSTATUS_HUKTE
+    csrc hstatus, t0
+    li t0, ENVCFG_UKTE
+    csrs CSR_SENVCFG, t0
+    li s2, 0
+    run (VA_UC + CODE_HLV), 0
+    expect_none
+    bne t4, a5, fail
+    //  e. HLV* in M-mode (and HS-mode), with SPVP = 0, use senvcfg.UKTE:
+    //     with it, hlv.d raises the load page fault at the tag address, with
+    //     GVA = 1; with HUKTE alone, it is performed.
+    li s2, 0
+    li t4, RD_CANARY
+    hlv.d t4, (t1)
+    expect_trap CAUSE_LOAD_PAGE_FAULT, TAG_UP_TVAL
+    li t5, 1
+    bne s5, t5, fail
+    expect_canary t4
+    li t0, ENVCFG_UKTE
+    csrc CSR_SENVCFG, t0
+    li t0, HSTATUS_HUKTE
+    csrs hstatus, t0
+    li s2, 0
+    hlv.d t4, (t1)
+    expect_none
+    bne t4, a5, fail
+    li t0, HSTATUS_HU | HSTATUS_VUMT | HSTATUS_HUPMM | HSTATUS_HUKTE
+    csrc hstatus, t0
+    csrw vsatp, zero
+    hfence.vvma
+    csrw CSR_VSVITTU, zero
+    li t0, VITT_U
+    csrw CSR_SVITTU, t0
+    la t1, root_table
+    li t2, ROOT_UP * 8
+    add t1, t1, t2
+    sd zero, 0(t1)
+    sfence.vma
+    set_tag tag_u, (VA_D + 0x40), 0
 
 pass:
     call cleanup

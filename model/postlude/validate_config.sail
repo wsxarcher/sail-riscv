@@ -710,6 +710,10 @@ private function check_misc_extension_dependencies() -> bool = {
     valid = false;
     print_endline("The Svatag/Smvatag extensions are enabled but Zimt is disabled: the tag table extensions require Zimt.");
   };
+  if (config extensions.Svatag.supported : bool) & not(config extensions.Svukte.supported : bool) then {
+    valid = false;
+    print_endline("The Svatag extension is enabled but Svukte is disabled: Svatag depends on Svukte.");
+  };
   if (config extensions.Zvfbfmin.supported : bool) & not(hartSupports(Ext_Zve32f)) then {
     valid = false;
     print_endline("The Zvfbfmin extension is enabled but Zve32f is disabled: supporting Zvfbfmin requires Zve32f.")

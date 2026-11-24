@@ -18,7 +18,11 @@ function clause currentlyEnabled(Ext_Zimt) =
 
 // Svatag defines the virtually indexed tag table (VITT) for
 // S/HS/U/VS/VU modes; Smvatag defines it for M-mode.
-function clause currentlyEnabled(Ext_Svatag) = hartSupports(Ext_Svatag) & currentlyEnabled(Ext_Zimt)
+// "Svatag depends on Svukte extension and thus assumes an even split in
+// address space between user and supervisor": the VITT ranges of U/VU and
+// S/HS/VS mode hold the tags of the lower and the upper half (zimt_vitt_range).
+function clause currentlyEnabled(Ext_Svatag) =
+  hartSupports(Ext_Svatag) & currentlyEnabled(Ext_Zimt) & currentlyEnabled(Ext_Svukte)
 function clause currentlyEnabled(Ext_Smvatag) = hartSupports(Ext_Smvatag) & currentlyEnabled(Ext_Zimt)
 
 // ---------------------------------------------------------------------
