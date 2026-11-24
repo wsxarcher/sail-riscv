@@ -5,7 +5,9 @@
 // tagged-data and tagcheck-exempt code pages, the straddle rules,
 // supervisor accesses to user pages, mstatus.MTAG_I and hstatus.MTAG_I,
 // HLV*/HSV*/HLVX*, and the AMOs, LR/SC, cbo.zero and vector accesses
-// (an AMO over two pages, which is never split, is not checked).
+// (an AMO over two pages, which is never split, is not checked), and the
+// protection of tag storage (Svatag): the access faults of regular
+// accesses and settag in the VITT range of their privilege (section 16).
 //
 // Runs in M-mode, and in S, U, HS, HU and VS-mode for what MPRV cannot
 // do (instruction fetches, HLV* in HS/HU-mode). Memory tagging uses
@@ -13,7 +15,9 @@
 // (menvcfg, senvcfg, henvcfg, hstatus.HUPMM). satp, and vsatp with
 // hgatp = Bare, use the same Sv39 tables: the gigapage 0x80000000 (the
 // test image) mapped to itself, and the 4 KiB pages of test_pages below
-// from VA 0xC0000000. Memory tags are 0 except where a test sets them,
+// from VA 0xC0000000, again from VA 0xC6200000 for the tag table of
+// U-mode and VU-mode, whose VITT range must not hold the test pages.
+// Memory tags are 0 except where a test sets them,
 // so pointer tag 0 matches and pointer tag 5 mismatches.
 //
 // NOTE: the CSR addresses of the tag table bases and the position of
@@ -48,6 +52,16 @@
 
 #define CAUSE_SOFTWARE_CHECK 18
 #define SWCHECK_TVAL_MEM_TAG 4
+// An AMO or LR/SC over two pages, which is never split, fails the
+// misaligned atomicity granule (MAG) check of its first page: with this
+// config a store/AMO access fault for the AMO ("amo": "AccessFault"),
+// while the LR raises its misaligned load access fault before its
+// translation ("lrsc": {"Some": "AccessFault"}). test_zimt_vitt_amo.S
+// runs this test with misaligned exceptions instead (zimt_vitt_amo.json).
+#ifndef CAUSE_AMO_CROSS
+#define CAUSE_AMO_CROSS  CAUSE_STORE_ACCESS
+#define CAUSE_LR_CROSS   CAUSE_LOAD_ACCESS
+#endif
 
 // Test pages, from VA 0xC0000000 (index 3 of the root table).
 #define TVA              0xC0000000
@@ -70,9 +84,17 @@
 #define VA_N             (TVA + 0x10000) // page_b: S data page without MTAG, before VA_T
 #define VA_T             (TVA + 0x11000) // page_a2: S tagged-data page
 // The tag byte of VA v (4-bit tags) is at VITT + (v >> 5), here
-// VA_TS or VA_TU + ((v - TVA) >> 5).
+// VA_TS or VA_TU_ALIAS + ((v - TVA) >> 5). VA_TU_ALIAS is VA_TU in an
+// alias of the test pages (l1_table[ALIAS_L1] -> l0_table), so that the
+// VITT range of U-mode and VU-mode (svittu or vsvittu and the 2^33 bytes
+// after it, Svatag) is above the test pages; that of S-mode and VS-mode
+// (svitts or vsvitts + 0x07FFFFFE00000000 and the 2^33 bytes after it)
+// is not canonical.
+#define ALIAS_L1         0x31
+#define ALIAS            (ALIAS_L1 << 21)
+#define VA_TU_ALIAS      (VA_TU + ALIAS)
 #define VITT_S           (VA_TS - (TVA >> 5))
-#define VITT_U           (VA_TU - (TVA >> 5))
+#define VITT_U           (VA_TU_ALIAS - (TVA >> 5))
 #define TAG_OFF(v)       (((v) - TVA) >> 5)
 // Section 9: the tag of the last chunk of the address space
 // (0x0FFFFFFFFFFFFFFF) in the last byte of tag_s (at VA_TS), so that of
@@ -94,6 +116,22 @@
 #define CODE_JR          0x18  // jr t1
 #define CODE_SD          0x20  // sd t4, 0(t1)
 #define CODE_SETTAG      0x28  // settag t1, 0
+#define CODE_SETTAG1     0x30  // settag t1, 1
+#define CODE_SETTAG15    0x38  // settag t1, 15
+
+// Section 16: the VITT range of a privilege with Sv39 and 4-bit tags is
+// 2^38 >> 5 = 2^33 bytes, from svittu (vsvittu) for U-mode (VU-mode),
+// and from svitts (vsvitts) + ((2^64 - 2^38) >> 5) for S-mode (VS-mode);
+// with 8-bit tags 2^34 bytes, from svittu.
+#define VITT_S_OFF       0x07FFFFFE00000000
+// Section 16: with svittu = TVA, the tag of this chunk is at VA_TU_ALIAS
+// (TVA + (0xC40C0000 >> 5))
+#define VITT_TAGGED_CHUNK 0xC40C0000
+// Section 16: rd of the faulting loads and AMOs keeps this canary.
+#define RD_CANARY        0xA5A5A5A5A5A5A5A5
+#define CSR_MVITT        0x7C4
+#define VITT_SIZE        0x200000000
+#define VITT_SIZE7       0x400000000
 
 .macro checktag rs1, imm4
   .4byte ((0x43 << 25) | (\imm4 << 20) | (\rs1 << 15) | (0x4 << 12) | 0x73)
@@ -175,6 +213,43 @@
     li t5, \tval
     bne s3, t5, fail
 .endm
+// An access fault of the protection of tag storage (section 16): mtval2
+// is 0.
+.macro expect_access cause, tval
+    expect_trap \cause, \tval
+    bnez s8, fail
+.endm
+// Section 16j: with svittu = u (a range that ends at VA_UXC), a load in
+// VA_TU raises the access fault and one in VA_UXC none; with svitts = s
+// (a range from VA_TS), a load there raises it.
+.macro vitt_levels u, s
+    li t0, \u
+    csrw CSR_SVITTU, t0
+    ptr t1, (VA_TU + 0xFF8), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TU + 0xFF8)
+    ptr t1, VA_UXC, 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    li t0, \s
+    csrw CSR_SVITTS, t0
+    ptr t1, VA_TS, 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+.endm
+.macro expect_canary reg
+    li t5, RD_CANARY
+    bne \reg, t5, fail
+.endm
 .macro expect_swcheck gva
     expect_trap CAUSE_SOFTWARE_CHECK, SWCHECK_TVAL_MEM_TAG
     li t5, \gva
@@ -240,7 +315,8 @@ main:
     csrw CSR_SVITTU, t0
 
     //    Page tables: root[2] maps the test image, root[3] -> l1_table,
-    //    l1_table[0] -> l0_table, which maps the test pages.
+    //    l1_table[0] and l1_table[ALIAS_L1] -> l0_table, which maps the
+    //    test pages.
     la t1, root_table
     li t0, 0x80000000
     srli t0, t0, RISCV_PGSHIFT
@@ -258,6 +334,7 @@ main:
     slli t0, t0, PTE_PPN_SHIFT
     ori t0, t0, PTE_V
     sd t0, 0(t1)
+    sd t0, (ALIAS_L1 * 8)(t1)
     la t0, page_a
     map_page 0, DATA_S | PTE_MTAG
     la t0, page_b
@@ -1047,10 +1124,10 @@ main:
     // ------------------------------------------------------------------
     // 15. LR/SC and AMOs are never split: an AMO over the page without
     //     MTAG and the tagged-data page translates its first page only
-    //     and raises its misaligned exception (a store/AMO access fault,
-    //     as it is outside its 16-byte misaligned atomicity granule). It
-    //     is not checked, though the first chunk of the next page has a
-    //     mismatching tag, and stores no byte.
+    //     and raises the exception of its misaligned atomicity granule
+    //     check, as it is outside its 16-byte granule (CAUSE_AMO_CROSS).
+    //     It is not checked, though the first chunk of the next page has
+    //     a mismatching tag, and stores no byte.
     li t0, VITT_S
     csrw CSR_SVITTS, t0
     set_tag tag_s, (VA_N + 0xFF0), 5
@@ -1067,7 +1144,7 @@ main:
     mprv MSTATUS_MPP_S
     amoadd.d t4, t2, (t1)
     mprv_off
-    expect_trap CAUSE_STORE_ACCESS, (VA_N + 0xFFC)
+    expect_trap CAUSE_AMO_CROSS, (VA_N + 0xFFC)
     la t0, page_b
     li t2, 0xFF8
     add t0, t0, t2
@@ -1077,6 +1154,691 @@ main:
     ld t4, 0(t0)
     bnez t4, fail
     set_tag tag_s, (VA_N + 0xFF0), 0
+
+    // ------------------------------------------------------------------
+    // 16. Protection of tag storage (Svatag): a regular access that
+    //     overlaps the VITT range of its effective privilege raises the
+    //     access fault of its kind with the address of the access (of its
+    //     part in the range, for a load over two pages), after its page
+    //     faults and its tag check; settag raises a store/AMO access fault
+    //     with the address in rs1 if its chunks overlap the range of the
+    //     current privilege. The range applies to the pointer-masked
+    //     address, which xtval holds: the first accesses of the S and U
+    //     ranges, cbo.zero, settag and HLV*/HSV* use pointer tag 5.
+    //     Instruction fetches and HLVX*, which pointer masking does not
+    //     apply to, are not regular accesses. All traps go to M-mode here.
+    csrw medeleg, zero
+    li t2, 7
+    //  a. Effective privilege S, with the range from VA_TS (VA_C before it
+    //     is not a tagged-data page): a load, a store, LR, SC (also with a
+    //     reservation), an AMO and cbo.zero there, also through sp and
+    //     with mstatus.MTAG_I; a load over VA_C and VA_TS faults at
+    //     VA_TS, and one in VA_C does not.
+    //     An AMO and an LR over VA_C and VA_TS translate VA_C only and
+    //     access no byte (section 15): they raise the exception of their
+    //     misaligned atomicity granule check (or the LR its misaligned
+    //     exception), not the access fault of the range; with the range
+    //     ending at VA_TS (VA_C its last page), the access fault of the
+    //     range, at VA_C + 0xFFC.
+    li t0, (VA_TS - VITT_S_OFF)
+    csrw CSR_SVITTS, t0
+    ptr t1, VA_TS, 5
+    li t4, RD_CANARY
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    expect_canary t4
+    //     The faulting stores, SC, AMO and cbo.zero leave memory (read at
+    //     its physical address) unchanged.
+    la a4, tag_s
+    ld a5, 8(a4)
+    not t4, a5
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    sd t4, 8(t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, (VA_TS + 8)
+    ld t4, 8(a4)
+    bne t4, a5, fail
+    li t4, RD_CANARY
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.d t4, (t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    expect_canary t4
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    sc.d t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, VA_TS
+    //     ...also with a reservation, from an LR of the same physical
+    //     address through the identity map of the test image, below the
+    //     range: memory and rd keep their values
+    la a4, tag_s
+    ld a5, 0(a4)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.d t4, (a4)
+    mprv_off
+    expect_none
+    bne t4, a5, fail
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    sc.d t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, VA_TS
+    bne t4, a5, fail
+    ld t4, 0(a4)
+    bne t4, a5, fail
+    li t4, RD_CANARY
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, VA_TS
+    expect_canary t4
+    ld t4, 0(a4)
+    bne t4, a5, fail
+    ld a5, 0x48(a4)
+    li t3, 0x5A5A5A5A5A5A5A5A
+    sd t3, 0x48(a4)
+    ptr t1, (VA_TS + 0x48), 5
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    cbo_zero 6
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, (VA_TS + 0x48)
+    ld t4, 0x48(a4)
+    bne t4, t3, fail
+    sd a5, 0x48(a4)
+    mv s9, sp
+    li sp, (VA_TS + 0x10)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(sp)
+    mprv_off
+    mv sp, s9
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x10)
+    li t0, MSTATUS_MTAG_I
+    csrs mstatus, t0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    li t0, MSTATUS_MTAG_I
+    csrc mstatus, t0
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x48)
+    ptr t1, (VA_C + 0xFF8), 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    ptr t1, (VA_C + 0xFFC), 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    mprv_off
+    expect_trap CAUSE_AMO_CROSS, (VA_C + 0xFFC)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.d t4, (t1)
+    mprv_off
+    expect_trap CAUSE_LR_CROSS, (VA_C + 0xFFC)
+    li t0, (VA_TS - VITT_SIZE - VITT_S_OFF)
+    csrw CSR_SVITTS, t0
+    //     This range wraps around the end of the address space: a load in
+    //     VA_C raises the access fault, and one in VA_TS none.
+    ptr t3, (VA_C + 0xFF8), 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t3)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_C + 0xFF8)
+    ptr t3, (VA_TS + 0x10), 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t3)
+    mprv_off
+    expect_none
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoadd.d t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, (VA_C + 0xFFC)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.d t4, (t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_C + 0xFFC)
+    li t0, (VA_TS - VITT_S_OFF)
+    csrw CSR_SVITTS, t0
+    //     32-bit LR, SC and AMO, a floating-point load and a compressed load
+    //     through sp; a load of S-mode itself and one from a tagcheck-exempt
+    //     code page; settag of 16 chunks, of which only the last one is in
+    //     the range.
+    ptr t1, (VA_TS + 0x20), 5
+    li t4, RD_CANARY
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    lr.w t4, (t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x20)
+    expect_canary t4
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    sc.w t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, (VA_TS + 0x20)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    amoswap.w t4, t2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, (VA_TS + 0x20)
+    expect_canary t4
+    li t0, MSTATUS_FS
+    csrs mstatus, t0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    fld f0, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x20)
+    mv s9, sp
+    li sp, (VA_TS + 0x10)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    .option push
+    .option rvc
+    c.ldsp t4, 8(sp)
+    c.nop
+    .option pop
+    mprv_off
+    mv sp, s9
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x18)
+    expect_canary t4
+    ptr t1, VA_TS, 5
+    li s2, 0
+    run (VA_NC + CODE_LD), MSTATUS_MPP_S
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    li s2, 0
+    run (VA_XC + CODE_LD), MSTATUS_MPP_S
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    //     A nonzero mtinst (a transformed instruction) deposits the MTAG bit
+    //     of that code page in mstatus.MTAG_I.
+    li t0, MSTATUS_MTAG_I
+    csrc mstatus, t0
+    ptr t1, (VA_TS - 0xF0), 5
+    li s2, 0
+    run (VA_NC + CODE_SETTAG15), MSTATUS_MPP_S
+    expect_access CAUSE_STORE_ACCESS, (VA_TS - 0xF0)
+    //  b. The tag check of a tagged-data page in the range comes first: the
+    //     tag address of VA_T is not canonical (a load page fault on it),
+    //     and with mstatus.MTAG_I the access fault. A page fault of the
+    //     access comes first.
+    ptr t1, VA_T, 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_trap CAUSE_LOAD_PAGE_FAULT, (VA_TS - VITT_S_OFF + (VA_T >> 5))
+    li t0, MSTATUS_MTAG_I
+    csrs mstatus, t0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    li t0, MSTATUS_MTAG_I
+    csrc mstatus, t0
+    expect_access CAUSE_LOAD_ACCESS, VA_T
+    ptr t1, VA_UNM, 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_trap CAUSE_LOAD_PAGE_FAULT, VA_UNM
+    //  c. No VITT range without memory tagging, nor with Bare translation
+    //     (implementation-defined): an unchecked load (MTAG_I) of the
+    //     physical address that the range would hold with Sv39.
+    li t0, ENVCFG_MT
+    csrc CSR_MENVCFG, t0
+    ptr t1, VA_TS, 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    li t0, ENVCFG_MT_PMM
+    csrs CSR_MENVCFG, t0
+    la t1, tag_s
+    li t0, VITT_S_OFF
+    sub t0, t1, t0
+    csrw CSR_SVITTS, t0
+    csrr t3, satp
+    csrw satp, zero
+    sfence.vma
+    li t0, MSTATUS_MTAG_I
+    csrs mstatus, t0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    ld t4, 0(t1)
+    mprv_off
+    li t0, MSTATUS_MTAG_I
+    csrc mstatus, t0
+    csrw satp, t3
+    sfence.vma
+    expect_none
+    //  d. Effective privilege U, with the range from VA_UXC: a load there,
+    //     and one over VA_TU and VA_UXC at VA_UXC, but not in VA_TU before
+    //     it; an unmapped page in the range: a load page fault. With the
+    //     range ending at VA_UXC (from VA_UXC - 2^33, which wraps around
+    //     the end of the address space): in VA_TU, and over VA_TU and
+    //     VA_UXC at VA_TU + 0xFFC, but not in VA_UXC. With 8-bit tags the
+    //     range is 2^34 bytes.
+    li t0, VA_UXC
+    csrw CSR_SVITTU, t0
+    ptr t1, VA_UXC, 5
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_UXC
+    li s2, 0
+    run (VA_UC + CODE_LD), 0
+    expect_access CAUSE_LOAD_ACCESS, VA_UXC
+    ptr t1, (VA_TU + 0xFFC), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_UXC
+    ptr t1, (VA_TU + 0xFF8), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    ptr t1, VA_UNM, 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_trap CAUSE_LOAD_PAGE_FAULT, VA_UNM
+    li t0, (VA_UXC - VITT_SIZE)
+    csrw CSR_SVITTU, t0
+    ptr t1, (VA_TU + 0xFF8), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TU + 0xFF8)
+    ptr t1, (VA_TU + 0xFFC), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TU + 0xFFC)
+    ptr t1, VA_UXC, 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    li t0, (VA_UXC - VITT_SIZE7)
+    csrw CSR_SVITTU, t0
+    ptr t1, (VA_TU + 0xFF8), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    li t0, ENVCFG_MT
+    csrs CSR_SENVCFG, t0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TU + 0xFF8)
+    li t0, ENVCFG_MT
+    csrc CSR_SENVCFG, t0
+    li t0, ENVCFG_MT_PMM
+    csrs CSR_SENVCFG, t0
+    //     A tag check that passes in the range comes before the access
+    //     fault: svittu = VA_TU - (TVA >> 5), without the alias, puts the
+    //     range over the test pages and the tags of VA_D in tag_u (VA_TU).
+    //     A load of the U tagged-data page VA_D with the matching pointer
+    //     tag raises the load access fault, with a mismatching one the
+    //     software-check exception.
+    li t0, (VA_TU - (TVA >> 5))
+    csrw CSR_SVITTU, t0
+    set_tag tag_u, (VA_D + 0x30), 0
+    ptr t1, (VA_D + 0x30), 0
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_D + 0x30)
+    ptr t1, (VA_D + 0x30), 5
+    li s2, 0
+    mprv 0
+    ld t4, 0(t1)
+    mprv_off
+    expect_swcheck 0
+    //  e. settag in U-mode, with the range from VA_UXC: a chunk there, or
+    //     chunks from VA_TU + 0xFF0 into VA_UXC, raise a store/AMO access
+    //     fault with the pointer-masked address in rs1; one chunk at VA_TU
+    //     + 0xFF0 does not (its tag store, at an unmapped address, raises a
+    //     store page fault). With the range ending at VA_UXC, chunks from
+    //     its last one, at VA_TU + 0xFF0, out of it into VA_UXC raise it
+    //     too. The settag is fetched from VA_UC, in the first range.
+    li t0, VA_UXC
+    csrw CSR_SVITTU, t0
+    ptr t1, (VA_UXC + 0x18), 5
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), 0
+    expect_access CAUSE_STORE_ACCESS, (VA_UXC + 0x18)
+    ptr t1, (VA_TU + 0xFF8), 5
+    li s2, 0
+    run (VA_UC + CODE_SETTAG1), 0
+    expect_access CAUSE_STORE_ACCESS, (VA_TU + 0xFF8)
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), 0
+    expect_trap CAUSE_STORE_PAGE_FAULT, (VA_UXC + ((VA_TU + 0xFF8) >> 5))
+    li t0, (VA_UXC - VITT_SIZE)
+    csrw CSR_SVITTU, t0
+    li s2, 0
+    run (VA_UC + CODE_SETTAG1), 0
+    expect_access CAUSE_STORE_ACCESS, (VA_TU + 0xFF8)
+    //     With svittu = TVA, the tag of the chunk at VITT_TAGGED_CHUNK, in
+    //     the range, is the first byte of VA_TU_ALIAS (tag_u), which is
+    //     mapped: the access fault, and no tag store.
+    li t0, TVA
+    csrw CSR_SVITTU, t0
+    la a4, tag_u
+    lbu a5, 0(a4)
+    ptr t1, VITT_TAGGED_CHUNK, 5
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), 0
+    expect_access CAUSE_STORE_ACCESS, VITT_TAGGED_CHUNK
+    lbu t4, 0(a4)
+    bne t4, a5, fail
+    //     With 8-bit tags, whose range is 2^34 bytes: from VA_UXC - 2^34, a
+    //     chunk at VA_TU + 0xFF0 is in it.
+    li t0, ENVCFG_MT
+    csrs CSR_SENVCFG, t0
+    li t0, (VA_UXC - VITT_SIZE7)
+    csrw CSR_SVITTU, t0
+    li t1, (VA_TU + 0xFF0) | (0x5A << 57)
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), 0
+    expect_access CAUSE_STORE_ACCESS, (VA_TU + 0xFF0)
+    li t0, ENVCFG_MT
+    csrc CSR_SENVCFG, t0
+    li t0, ENVCFG_MT_PMM
+    csrs CSR_SENVCFG, t0
+    li t0, VA_UXC
+    csrw CSR_SVITTU, t0
+    //  f. HLV*/HSV* (vsatp with the same tables, hgatp = Bare): with SPVP =
+    //     0 (VU-mode) the range from vsvittu = VA_UXC, with SPVP = 1
+    //     (VS-mode) from vsvitts + 0x07FFFFFE00000000 = VA_TS; GVA = 1.
+    //     HLVX* is not a regular access. A load in VS-mode too.
+    csrw hgatp, zero
+    la t0, root_table
+    srli t0, t0, RISCV_PGSHIFT
+    li t1, SATP_MODE_SV39
+    slli t1, t1, 60
+    or t0, t0, t1
+    csrw vsatp, t0
+    hfence.gvma
+    hfence.vvma
+    li t0, ENVCFG_MT_PMM
+    csrs CSR_HENVCFG, t0
+    li t0, VA_UXC
+    csrw CSR_VSVITTU, t0
+    li t0, (VA_TS - VITT_S_OFF)
+    csrw CSR_VSVITTS, t0
+    li t0, HSTATUS_SPVP | HSTATUS_HU | HSTATUS_MTAG_I
+    csrc hstatus, t0
+    ptr t1, VA_UXC, 5
+    li s2, 0
+    hlv.d t4, (t1)
+    expect_access CAUSE_LOAD_ACCESS, VA_UXC
+    li t5, 1
+    bne s5, t5, fail
+    ptr t1, VA_UXC, 0
+    li s2, 0
+    hlvx.wu t4, (t1)
+    expect_none
+    li t0, HSTATUS_SPVP
+    csrs hstatus, t0
+    ptr t1, VA_TS, 5
+    li s2, 0
+    hsv.d t4, (t1)
+    expect_access CAUSE_STORE_ACCESS, VA_TS
+    li t5, 1
+    bne s5, t5, fail
+    li s2, 0
+    run (VA_NC + CODE_LD), MSTATUS_MPP_S | MSTATUS_MPV
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    li t5, 1
+    bne s5, t5, fail
+    //     settag in VS-mode and VU-mode, with GVA = 1, and a load in VU-mode.
+    ptr t1, (VA_TS + 0x20), 5
+    li s2, 0
+    run (VA_NC + CODE_SETTAG), MSTATUS_MPP_S | MSTATUS_MPV
+    expect_access CAUSE_STORE_ACCESS, (VA_TS + 0x20)
+    li t5, 1
+    bne s5, t5, fail
+    ptr t1, (VA_UXC + 0x20), 5
+    li s2, 0
+    run (VA_UC + CODE_SETTAG), MSTATUS_MPV
+    expect_access CAUSE_STORE_ACCESS, (VA_UXC + 0x20)
+    li t5, 1
+    bne s5, t5, fail
+    li s2, 0
+    run (VA_UC + CODE_LD), MSTATUS_MPV
+    expect_access CAUSE_LOAD_ACCESS, (VA_UXC + 0x20)
+    li t5, 1
+    bne s5, t5, fail
+    //  g. Vector accesses at effective privilege S, with the range from
+    //     VA_TS, of two 64-bit elements from VA_C + 0xFF8: element 1 raises
+    //     the access fault (vstart = 1), after a store has stored element
+    //     0; a fault-only-first load trims vl to 1 instead.
+    li t0, (VA_TS - VITT_S_OFF)
+    csrw CSR_SVITTS, t0
+    li t0, MSTATUS_VS
+    csrs mstatus, t0
+    vsetivli t0, 2, e64, m1, ta, ma
+    li t4, -1
+    vmv.v.x v2, t4
+    la t3, page_c
+    li t0, 0xFF8
+    add t3, t3, t0
+    sd zero, 0(t3)
+    ptr t1, (VA_C + 0xFF8), 0
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vle64.v v3, (t1)
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, VA_TS
+    csrr t0, vstart
+    li t5, 1
+    bne t0, t5, fail
+    csrw vstart, zero
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vse64.v v2, (t1)
+    mprv_off
+    expect_access CAUSE_STORE_ACCESS, VA_TS
+    csrr t0, vstart
+    li t5, 1
+    bne t0, t5, fail
+    csrw vstart, zero
+    ld t4, 0(t3)
+    li t5, -1
+    bne t4, t5, fail
+    sd zero, 0(t3)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vle64ff.v v3, (t1)
+    mprv_off
+    expect_none
+    csrr t0, vl
+    li t5, 1
+    bne t0, t5, fail
+    //     With element 1 (in the range) masked off, no exception; strided
+    //     (stride 0x18) and indexed (offsets 0 and 0x18) loads fault at
+    //     their element 1, VA_TS + 0x10.
+    vsetivli t0, 2, e64, m1, ta, ma
+    vmv.v.i v0, 1
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vle64.v v3, (t1), v0.t
+    mprv_off
+    expect_none
+    li t2, 0x18
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vlse64.v v3, (t1), t2
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x10)
+    csrw vstart, zero
+    vid.v v4
+    vmul.vx v4, v4, t2
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    vluxei64.v v3, (t1), v4
+    mprv_off
+    expect_access CAUSE_LOAD_ACCESS, (VA_TS + 0x10)
+    csrw vstart, zero
+    //  h. settag in M-mode with mstatus.MPRV = 1 and MPP = S uses the VITT
+    //     range of M-mode, none, and not that of S-mode: with the S range
+    //     from TVA and mvitt putting the tag of VA_A at VA_UNM, settag of
+    //     VA_A raises the store page fault of its tag store, which S-mode
+    //     translates.
+    li t0, (TVA - VITT_S_OFF)
+    csrw CSR_SVITTS, t0
+    li t0, (VA_UNM - (TVA >> 5))
+    csrw CSR_MVITT, t0
+    ptr t1, VA_A, 5
+    li t0, (MT_MODE_TAG4 << MT_MODE_SHIFT)
+    li s2, 0
+    mprv MSTATUS_MPP_S
+    csrs mseccfg, t0
+    settag 6, 0
+    csrc mseccfg, t0
+    mprv_off
+    expect_trap CAUSE_STORE_PAGE_FAULT, VA_UNM
+    csrw CSR_MVITT, zero
+    //  i. With the G stage only (vsatp Bare), VS-mode has no VITT range:
+    //     with vsvitts putting the range that VS-mode would have with Sv39
+    //     at tag_s, a load of tag_s with MPRV and MPV = 1 (and
+    //     mstatus.MTAG_I, unchecked) is performed; with two-stage
+    //     translation (the VS stage with the same tables, which map the
+    //     test image to itself) it raises the access fault, with GVA = 1.
+    la t1, g_table
+    li t0, 0x80000000
+    srli t0, t0, RISCV_PGSHIFT
+    slli t0, t0, PTE_PPN_SHIFT
+    ori t0, t0, PTE_LEAF | PTE_R | PTE_W | PTE_X | PTE_U
+    sd t0, 16(t1)
+    srli t1, t1, RISCV_PGSHIFT
+    li t0, (HGATP64_MODE & ~(HGATP64_MODE << 1)) * HGATP_MODE_SV39X4
+    or t0, t0, t1
+    csrw hgatp, t0
+    csrw vsatp, zero
+    hfence.gvma
+    hfence.vvma
+    la t1, tag_s
+    li t0, VITT_S_OFF
+    sub t0, t1, t0
+    csrw CSR_VSVITTS, t0
+    ld a5, 0(t1)
+    li t0, MSTATUS_MTAG_I
+    csrs mstatus, t0
+    li s2, 0
+    mprv MSTATUS_MPP_S | MSTATUS_MPV
+    ld t4, 0(t1)
+    mprv_off
+    expect_none
+    bne t4, a5, fail
+    la t0, root_table
+    srli t0, t0, RISCV_PGSHIFT
+    li t3, SATP_MODE_SV39
+    slli t3, t3, 60
+    or t0, t0, t3
+    csrw vsatp, t0
+    hfence.vvma
+    li t4, RD_CANARY
+    li s2, 0
+    mprv MSTATUS_MPP_S | MSTATUS_MPV
+    ld t4, 0(t1)
+    mprv_off
+    li t5, CAUSE_LOAD_ACCESS
+    bne s2, t5, fail
+    bne s3, t1, fail
+    bnez s8, fail
+    li t5, 1
+    bne s5, t5, fail
+    expect_canary t4
+    li t0, MSTATUS_MTAG_I
+    csrc mstatus, t0
+    csrw vsatp, zero
+    csrw hgatp, zero
+    la t1, g_table
+    sd zero, 16(t1)
+    hfence.gvma
+    hfence.vvma
+    csrw CSR_VSVITTS, zero
+    //  j. With Sv48 and Sv57 (root tables whose entry 0 points to the
+    //     next level, down to the Sv39 root table, so the test pages keep
+    //     their addresses) the VITT ranges are 2^42 and 2^51 bytes, and
+    //     that of S-mode starts at svitts + ((2^64 - 2^47) >> 5) and
+    //     svitts + ((2^64 - 2^56) >> 5): with svittu = VA_UXC - the size,
+    //     a load in VA_TU raises the access fault and one in VA_UXC none
+    //     (with the size of Sv39 neither would); with svitts putting the S
+    //     range at VA_TS, a load there raises it.
+    la t0, root_table
+    srli t0, t0, RISCV_PGSHIFT
+    slli t0, t0, PTE_PPN_SHIFT
+    ori t0, t0, PTE_V
+    la t1, root48
+    sd t0, 0(t1)
+    srli t0, t1, RISCV_PGSHIFT
+    slli t0, t0, PTE_PPN_SHIFT
+    ori t0, t0, PTE_V
+    la t1, root57
+    sd t0, 0(t1)
+    csrr a6, satp
+    la t0, root48
+    srli t0, t0, RISCV_PGSHIFT
+    li t1, SATP_MODE_SV48
+    slli t1, t1, 60
+    or t0, t0, t1
+    csrw satp, t0
+    sfence.vma
+    vitt_levels (VA_UXC - (1 << 42)), (VA_TS - 0x07FFFC0000000000)
+    la t0, root57
+    srli t0, t0, RISCV_PGSHIFT
+    li t1, SATP_MODE_SV57
+    slli t1, t1, 60
+    or t0, t0, t1
+    csrw satp, t0
+    sfence.vma
+    vitt_levels (VA_UXC - (1 << 51)), (VA_TS - 0x07F8000000000000)
+    csrw satp, a6
+    sfence.vma
+    li t0, VITT_S
+    csrw CSR_SVITTS, t0
+    li t0, VITT_U
+    csrw CSR_SVITTU, t0
 
 pass:
     call cleanup
@@ -1169,6 +1931,10 @@ code_page:
     ecall
     settag 6, 0            // CODE_SETTAG: settag t1, 0
     ecall
+    settag 6, 1            // CODE_SETTAG1: settag t1, 1
+    ecall
+    settag 6, 15           // CODE_SETTAG15: settag t1, 15
+    ecall
 .p2align 12
 // ld t4, 0(t1) straddling straddle_p0 and straddle_p1, then ecall.
 straddle_p0:
@@ -1213,5 +1979,9 @@ page_c:
 tag_s:
     .fill 4096, 1, 0
 tag_u:
+    .fill 4096, 1, 0
+root48:                    // Section 16j: Sv48 and Sv57 root tables
+    .fill 4096, 1, 0
+root57:
     .fill 4096, 1, 0
 #endif

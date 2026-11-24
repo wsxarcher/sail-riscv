@@ -144,6 +144,13 @@ function clause execute SETTAG(imm, rs1) = {
   // Strip the pointer tag via the pointer-masking transform; the
   // first chunk is at the 16-byte aligned address.
   let va = bits_of(transform_effective_address(Virtaddr(raw), default_access_info(Store(Data))));
+  // Svatag: chunks that overlap the VITT range of the current privilege
+  // raise a store/AMO access fault before any tag is stored.
+  match zimt_vitt_range(cur_privilege, mode) {
+    Some(range) => if zimt_vitt_overlap(range, [va with 3 .. 0 = zeros()], 16 * (unsigned(imm) + 1))
+                   then return memory_exception(E_SAMO_Access_Fault(), va, default_access_info(Store(Tag))),
+    None()      => (),
+  };
   foreach (i from 0 to unsigned(imm)) {
     match zimt_store_mc_tag(vitt, zimt_chunk(va, i), mc_tag, mode) {
       Err(e) => return e,

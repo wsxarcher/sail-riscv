@@ -68,6 +68,10 @@ function clause execute ZICBOZ(rs1) = {
         // (add the positive offset) to get it. Normally this will be
         // equal to rs1, but pointer masking can change that.
         Err(e, _) => trap({ e with excinfo = bits_of(vaddr_for_error) }),
+        // Zimt (Svatag): a cache block that overlaps the VITT range raises a
+        // store/AMO access fault, before the PMP and PMA checks.
+        Ok(_, _, _) if zimt_vitt_protected(vaddr, cache_block_size, access, access_info) =>
+          memory_exception(E_SAMO_Access_Fault(), bits_of(vaddr_for_error), access_info),
         Ok(paddr, pbmt, _) => {
 
           // `exception_vaddr()` is expecting the physical addresses

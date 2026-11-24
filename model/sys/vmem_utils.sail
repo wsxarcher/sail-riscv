@@ -158,6 +158,14 @@ private function with_excinst_offset(e : ExecutionResult, vaddr : virtaddr) -> E
 function memory_exception(e : ExceptionType, excinfo : xlenbits, access_info : AccessInfo) -> ExecutionResult =
   trap(mem_exception_context(e, excinfo, access_info))
 
+// Zimt (Svatag) protection of tag storage hook; defined in
+// zimt_tag_ops.sail: whether the regular access of width bytes at vaddr
+// overlaps the VITT range of its effective privilege, so it raises an
+// access fault. The helpers below check each translated part of an
+// access before its PMP and PMA checks.
+val zimt_vitt_protected : forall 'width, 0 < 'width <= max_mem_access.
+  (virtaddr, int('width), MemoryAccessType(mem_payload), AccessInfo) -> bool
+
 // Helper for translated read access.
 private function translate_and_read_value forall 'width, 0 < 'width <= max_mem_access.
   (vaddr : virtaddr, width : int('width), access : MemoryAccessType(mem_payload), access_info : AccessInfo, aq : bool, rl : bool, res : bool)
@@ -167,6 +175,9 @@ private function translate_and_read_value forall 'width, 0 < 'width <= max_mem_a
 
   match translateAddr(vaddr, access, eff_priv) {
     Err(e, _) => Err(trap(e)),
+
+    Ok(_, _, _) if zimt_vitt_protected(vaddr, width, access, access_info) =>
+      Err(memory_exception(E_Load_Access_Fault(), bits_of(vaddr), access_info)),
 
     Ok(paddr, pbmt, _) => match mem_read(access, pbmt, eff_priv, paddr, width, aq, rl, res) {
       Err(exc_paddr, e) => {
@@ -268,6 +279,10 @@ private function translate_and_write_value forall 'width, 0 < 'width <= max_mem_
 
   match translateAddr(vaddr, access, eff_priv) {
     Err(e, _) => Err(trap(e)),
+
+    // Before the reservation check: a failing SC raises it too
+    Ok(_, _, _) if zimt_vitt_protected(vaddr, width, access, access_info) =>
+      Err(memory_exception(E_SAMO_Access_Fault(), bits_of(vaddr), access_info)),
 
     Ok(paddr, pbmt, _) => if res & not(match_reservation(bits_of(paddr))) then {
       // Check PMA and PMP access controls before reporting the

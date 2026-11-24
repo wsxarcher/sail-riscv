@@ -159,6 +159,7 @@ add_first_party_experimental_override_test("test_zimt_no_cfi.S" "zimt_no_cfi.jso
 add_first_party_experimental_test("test_svatag_vs.S")
 add_first_party_experimental_test("test_zimt_g_stage.S")
 add_first_party_experimental_test("test_zimt_paging.S")
+add_first_party_experimental_override_test("test_zimt_vitt_amo.S" "zimt_vitt_amo.json")
 add_first_party_experimental_test("test_zimt_regular.S")
 add_first_party_experimental_override_test("test_zimt_settag.S" "zimt_settag.json")
 

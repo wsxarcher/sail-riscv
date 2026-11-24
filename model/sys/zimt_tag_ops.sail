@@ -22,6 +22,12 @@
 // misaligned exception" (the resolution of riscv-memory-tagging issue
 // #60; the settag exceptions text that allows one without misaligned
 // support predates it).
+//
+// Under first-stage paging, a regular access that spans the VITT range
+// of its effective privilege, the mc_tag_va of its lowest to its highest
+// virtual address, raises an access fault, and so does a settag whose
+// chunks overlap that of the current privilege (Svatag, protection of
+// tag storage; zimt_vitt_range).
 
 // Software-check exception for a tag mismatch, xtval = 4. xtval does not
 // hold a guest virtual address, so GVA is clear, except for HLV*/HSV*
@@ -178,27 +184,32 @@ function zimt_record_fetch(first_granule : bool, ext : ext_ptw) -> unit = {
 // MTAG_I, so it must not keep the value of the previous instruction.
 function zimt_fetch_fault() -> unit = zimt_code_exempt = false
 
-// The MemTaggingMode of the implicit tag checks of a regular access
+// The MemTaggingMode of the memory tagging of a regular access
 // ("xMT_MODE source"): that of its effective privilege, except for
 // HLV*/HSV* executed in HU-mode with effective privilege VU ("Execution
 // environment HU and effective privilege VU : hstatus.VUMT_MODE"; from
 // HS-mode, and M-mode, VU uses senvcfg.MT_MODE and VS henvcfg.MT_MODE,
-// as get_mt_mode does). "If MPRV=1 and mstatus.MTAG_I is set, then load
-// and store instructions generate unchecked accesses", and "If
-// hstatus.MTAG_I is set, then HLV*/HSV* instructions do not generate
-// checked accesses" (MPRV does not affect HLV*/HSV*).
-function zimt_access_mt_mode(access_info : AccessInfo) -> MemTaggingMode = {
+// as get_mt_mode does). MTAG_I does not change it.
+function zimt_access_env_mt_mode(access_info : AccessInfo) -> MemTaggingMode = {
   let eff_priv = access_info.eff_privilege;
-  if access_info.as_guest then {
-    if hstatus[MTAG_I] == 0b1 then return MT_MODE_Disabled;
-    if eff_priv == VirtualUser & cur_privilege == User then {
-      if not(currentlyEnabled(Ext_Zimt)) then return MT_MODE_Disabled;
-      return mt_mode(hstatus[VUMT_MODE])
-    };
-    return get_mt_mode(eff_priv)
+  if access_info.as_guest & eff_priv == VirtualUser & cur_privilege == User then {
+    if not(currentlyEnabled(Ext_Zimt)) then return MT_MODE_Disabled;
+    return mt_mode(hstatus[VUMT_MODE])
   };
-  if mstatus[MPRV] == 0b1 & mstatus[MTAG_I] == 0b1 then return MT_MODE_Disabled;
   get_mt_mode(eff_priv)
+}
+
+// The MemTaggingMode of the implicit tag checks of a regular access:
+// that of its memory tagging, unless MTAG_I makes it unchecked. "If
+// MPRV=1 and mstatus.MTAG_I is set, then load and store instructions
+// generate unchecked accesses", and "If hstatus.MTAG_I is set, then
+// HLV*/HSV* instructions do not generate checked accesses" (MPRV does not
+// affect HLV*/HSV*).
+function zimt_access_mt_mode(access_info : AccessInfo) -> MemTaggingMode = {
+  if access_info.as_guest then {
+    if hstatus[MTAG_I] == 0b1 then return MT_MODE_Disabled
+  } else if mstatus[MPRV] == 0b1 & mstatus[MTAG_I] == 0b1 then return MT_MODE_Disabled;
+  zimt_access_env_mt_mode(access_info)
 }
 
 // A user page accessed with a supervisor effective privilege:
@@ -213,6 +224,106 @@ function zimt_supervisor_to_user(page : ext_ptw, eff_priv : Privilege) -> bool =
 // unless its MTAG bit is ignored.
 function zimt_tagged_data_page(page : ext_ptw, eff_priv : Privilege) -> bool =
   page.first_stage_leaf & page.pte_mtag & not(page.pte_x) & not(zimt_supervisor_to_user(page, eff_priv))
+
+// Whether an access is a regular load or store of data (see the implicit
+// tag checks below): scalar loads and stores (also HLV*/HSV*), LR/SC,
+// AMOs, vector element accesses and cbo.zero. HLVX* use LoadExecute.
+function zimt_regular_access(access : MemoryAccessType(mem_payload)) -> bool =
+  match access {
+    Load(Data)                   => true,
+    Store(Data)                  => true,
+    LoadReserved(_, _, Data)     => true,
+    StoreConditional(_, _, Data) => true,
+    Atomic(_, _, _, Data, Data)  => true,
+    Load(Vector)                 => true,
+    Store(Vector)                => true,
+    CacheAccess(CB_zero())       => true,
+    _                            => false,
+  }
+
+// ---------------------------------------------------------------------
+// Protection of tag storage (Svatag).
+//
+// "Hart must raise access faults on regular loads and stores to virtual
+// addresses spanning VITT range. Hart must also raise access fault on
+// settag instruction if the memory chunk specified in rs1 overlaps with
+// VITT range", where the VITT range of the current privilege is
+//   mc_tag_va(LOWEST_VADDR_CURR_PRIV) .. mc_tag_va(HIGHEST_VADDR_CURR_PRIV).
+// With Sv39, Sv48 or Sv57 (VADDR_BITS = 39, 48 or 57) the lowest and
+// highest virtual addresses are 0 and 2^(VADDR_BITS - 1) - 1 for U and
+// VU, and 2^(VADDR_BITS - 1) and 2^VADDR_BITS - 1 for S, HS and VS
+// ("an even split in address space between user and supervisor"), which
+// as XLEN-bit virtual addresses are -2^(VADDR_BITS - 1) and -1.
+// mc_tag_va is computed as for the tag lookups (zimt_tag_byte_addr), on
+// XLEN-bit addresses, so the range holds the tags of all the virtual
+// addresses of the privilege; it may wrap around the end of the address
+// space, and it is a whole number of pages. "In bare mode and M-mode,
+// LOWEST_VADDR_CURR_PRIV and HIGHEST_VADDR_CURR_PRIV are implementation
+// defined": this implementation has no VITT range there, nor without
+// memory tagging (no mc_tag_width) or tag table base.
+//
+// The privilege of a regular access is its effective privilege, whose
+// memory tagging gives mc_tag_width; mstatus.MTAG_I and hstatus.MTAG_I,
+// which make accesses unchecked, do not change it, nor does a base
+// register sp or a tagcheck-exempt code page. A regular access raises the
+// access fault of its kind (load, or store/AMO) with the address of the
+// access, or of its part in a page, that overlaps the range. It is an
+// access fault of the data access, raised where its PMP and PMA access
+// faults are, after its translation, so after its page faults and its
+// implicit tag check. settag checks its chunks against the VITT range of
+// the current privilege before it stores any tag, and raises a store/AMO
+// access fault with the (pointer-masked) address in rs1.
+
+// The VITT range of privilege priv with memory tagging mode: its first
+// address and its size, 2^(VADDR_BITS - 1) >> 5 bytes with 4-bit tags
+// and >> 4 with 8-bit tags.
+function zimt_vitt_range(priv : Privilege, mode : MemTaggingMode) -> option((xlenbits, xlenbits)) = {
+  if mode == MT_MODE_Disabled then return None();
+  let base : xlenbits = match get_vitt_base(priv) {
+    Some(b) => b,
+    None()  => return None(),
+  };
+  let translation : SATPMode = match priv {
+    Machine           => return None(),
+    VirtualSupervisor => vsatp_mode(),
+    VirtualUser       => vsatp_mode(),
+    _                 => satp_mode(priv),
+  };
+  let half_bits : {38, 47, 56} = match translation {
+    Sv39 => 38,
+    Sv48 => 47,
+    Sv57 => 56,
+    _    => return None(),
+  };
+  let shift : {4, 5} = if mode == MT_MODE_Tag4 then 5 else 4;
+  let lowest : xlenbits = if priv == User | priv == VirtualUser then zeros()
+                          else to_bits_truncate(xlen, - (2 ^ half_bits));
+  Some((base + (lowest >> shift), to_bits_truncate(xlen, 2 ^ (half_bits - shift))))
+}
+
+// Whether the width bytes from va (which may wrap around the end of the
+// address space) overlap the VITT range (start, size).
+function zimt_vitt_overlap((start, size) : (xlenbits, xlenbits), va : xlenbits, width : int) -> bool =
+  unsigned(va - start) < unsigned(size) | unsigned(start - va) < width
+
+// The val declaration is in vmem_utils.sail, whose translate_and_read_value
+// and translate_and_write_value invoke this hook; the AMOs and cbo.zero,
+// which do not use them, invoke it themselves. It runs once vaddr is
+// translated, and only the bytes in the page of vaddr are: the parts of a
+// split access are within one page, while LR/SC and AMOs, which are never
+// split, translate their first page only, and one that crosses a page
+// accesses no byte (its misaligned atomicity granule is at most a page),
+// so the bytes in the next page are not protected (as they are not
+// checked, see zimt_implicit_check).
+function zimt_vitt_protected(vaddr, width, access, access_info) = {
+  if not(currentlyEnabled(Ext_Zimt)) | not(zimt_regular_access(access)) then return false;
+  let va = bits_of(vaddr);
+  let to_page_end : int = 2 ^ pagesize_bits - unsigned(va[pagesize_bits - 1 .. 0]);
+  match zimt_vitt_range(access_info.eff_privilege, zimt_access_env_mt_mode(access_info)) {
+    Some(range) => zimt_vitt_overlap(range, va, if width <= to_page_end then width else to_page_end),
+    None()      => false,
+  }
+}
 
 // ---------------------------------------------------------------------
 // Implicit tag checks on regular loads/stores.
@@ -271,19 +382,8 @@ function zimt_tagged_data_page(page : ext_ptw, eff_priv : Privilege) -> bool =
 // cbo.zero, which do not use them, invoke it themselves.
 function zimt_implicit_check(base, raw_addr, vaddr, width, access, access_info, trigger_payload) = {
   if not(currentlyEnabled(Ext_Zimt)) then return None();
-  // Only regular data loads/stores are checked. HLVX* use LoadExecute.
-  let checked_kind : bool = match access {
-    Load(Data)                   => true,
-    Store(Data)                  => true,
-    LoadReserved(_, _, Data)     => true,
-    StoreConditional(_, _, Data) => true,
-    Atomic(_, _, _, Data, Data)  => true,
-    Load(Vector)                 => true,
-    Store(Vector)                => true,
-    CacheAccess(CB_zero())       => true,
-    _                            => false,
-  };
-  if not(checked_kind) then return None();
+  // Only regular data loads/stores are checked.
+  if not(zimt_regular_access(access)) then return None();
   // "Memory accesses performed using the stack pointer (x2) as the
   // base register do not generate checked accesses."
   if base == sp then return None();

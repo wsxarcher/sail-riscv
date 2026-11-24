@@ -117,6 +117,11 @@ function clause execute AMO(op, aq, rl, rs2, rs1, width, rd) = {
     Ok(addr, pbmt, _) => (addr, pbmt),
   };
 
+  // Zimt (Svatag): an AMO that overlaps the VITT range raises a store/AMO
+  // access fault, before its PMP and PMA checks.
+  if zimt_vitt_protected(vaddr, width, access, access_info) then
+    return memory_exception(E_SAMO_Access_Fault(), bits_of(vaddr), access_info);
+
   let loaded : bits(8 * 'width) = match mem_write_ea(addr, width, eff_priv, access, pbmt, aq & rl, rl, true) {
     Err(exc_addr, e) => {
       // AMOs should not get split.
