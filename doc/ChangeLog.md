@@ -15,10 +15,12 @@
     implicit tag checks of scalar loads and stores, HLV/HSV, LR/SC,
     AMOs, cbo.zero and vector loads and stores, with and without
     first-stage paging (PTE.MTAG, tagcheck-exempt code pages,
-    mstatus.MTAG_I and hstatus.MTAG_I), and the protection of the tag
-    storage (VITT range) of each mode under first-stage paging. CSR
-    addresses and the PTE.MTAG position (bit 58) are placeholders
-    pending allocation by the memory tagging TG
+    mstatus.MTAG_I and hstatus.MTAG_I), the protection of the tag
+    storage (VITT range) of each mode under first-stage paging, and the
+    gating of the S-level and H-level Zimt and Svatag CSRs by
+    mstateen0.MT and hstateen0.MT. CSR addresses, the PTE.MTAG position
+    (bit 58) and the MT bit position (bit 53) are placeholders pending
+    allocation by the memory tagging TG
 
 - Updates to the [configuration file](../config/config.json.in):
   - The supported Zimt pointer tag widths can be specified, see
@@ -26,6 +28,12 @@
     `extensions.Zimt.supported_pointer_tag_width_7` (width 4 is
     mandatory when Zimt is supported). Svatag depends on Svukte:
     `extensions.Svatag.supported` requires `extensions.Svukte.supported`.
+  - The Zimt bit of `mstateen0` and `hstateen0` (MT, bit 53, a placeholder) can
+    be configured; see `extensions.Stateen.mstateen0.MT` and
+    `extensions.Stateen.hstateen0.MT` (read-only zero without Zimt, and for
+    mstateen0 without S-mode). A configuration that supports Zimt is valid
+    also without `--enable-experimental-extensions` (which disables it),
+    including bit 18 (software check) of `base.medeleg.delegatable_bits`.
   - The WARL behavior of a reserved or unimplemented encoding written to `mstatus.MPP`
     can now map to the least-privileged implemented mode or keep the previous
     legal value; see `base.reserved_behavior.illegal_privilege`.

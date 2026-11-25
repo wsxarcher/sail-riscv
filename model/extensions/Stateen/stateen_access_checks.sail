@@ -81,6 +81,25 @@ function stateen_allows_CSR_access(csr : csreg, priv : Privilege, _access_type :
     // hcontext
     (0x6a8, priv) => check_stateen_bit(priv, STATEEN_CONTEXT, 0),
 
+    // Zimt and Svatag, at the PLACEHOLDER addresses of zimt_regs.sail:
+    // "CSR access to senvmtagexclude0, senvmtagexclude1, henvmtagexclude0,
+    // and henvmtagexclude1 [svittu, svitts, vsvitts, and vsvittu] from modes
+    // less privileged than M causes illegal instruction exception if
+    // Smstateen is implemented and mstateen0.MT=0", and the access to the
+    // S-level ones from VS-mode "causes virtual instruction exception if
+    // Ssstateen is implemented, hstateen0.MT=0, and mstateen0.MT=1 or
+    // Smstateen is not implemented".
+    // senvmtagexclude0, senvmtagexclude1, svitts, svittu
+    (0x5C0, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x5C1, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x5C2, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x5C3, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    // henvmtagexclude0, henvmtagexclude1, vsvitts, vsvittu
+    (0x6C0, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x6C1, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x6C2, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+    (0x6C3, priv) => check_stateen_bit(priv, STATEEN_MT, 0),
+
     // fflags
     (0x001, priv) => if hartSupports(Ext_Zfinx) then check_stateen_bit(priv, STATEEN_FCSR, 0) else true,
     // frm

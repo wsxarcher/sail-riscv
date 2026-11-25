@@ -1329,6 +1329,8 @@
         "CONTEXT": "CSRBit_Writable",
         "P1P13": "@CONFIG__STATEEN__P1P13@",
         "SRMCFG": "CSRBit_Writable",
+        // Zimt (experimental). Its position, bit 53, is a placeholder.
+        "MT": "@CONFIG__STATEEN__MT@",
         "FCSR": "CSRBit_ReadOnlyZero",
         "C": "CSRBit_ReadOnlyZero"
       },
@@ -1348,6 +1350,7 @@
         "ENVCFG": "CSRBit_Writable",
         "CSRIND": "CSRBit_Writable",
         "CONTEXT": "CSRBit_Writable",
+        "MT": "@CONFIG__STATEEN__MT@",
         "FCSR": "CSRBit_ReadOnlyZero",
         "C": "CSRBit_ReadOnlyZero"
       },

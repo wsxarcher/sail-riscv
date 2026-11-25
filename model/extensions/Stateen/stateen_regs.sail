@@ -16,8 +16,13 @@ function is_sstateen_accessible() -> bool = currentlyEnabled(Ext_S) & (currently
 termination_measure is_hstateen_accessible() = 5 // > Ext_H
 termination_measure is_sstateen_accessible() = 2 // > Ext_S
 
-enum stateen_bit = {STATEEN_FCSR, STATEEN_SRMCFG, STATEEN_P1P13, STATEEN_CONTEXT, STATEEN_CSRIND, STATEEN_ENVCFG, STATEEN_SE}
+enum stateen_bit = {STATEEN_FCSR, STATEEN_MT, STATEEN_SRMCFG, STATEEN_P1P13, STATEEN_CONTEXT, STATEEN_CSRIND, STATEEN_ENVCFG, STATEEN_SE}
 
+// The Zimt memory tagging draft specification does not fix the position of
+// its MT bit ("The position of the MT bit in [mh]stateen must be specified
+// before ratification"). Bit 53 is a PLACEHOLDER: the next bit of the upper
+// half, which mstateen0 allocates downwards from bit 63 to the state that
+// U-mode cannot access.
 mapping stateen_bit_index : stateen_bit <-> range(0, 63) = {
   STATEEN_SE      <-> 63,
   STATEEN_ENVCFG  <-> 62,
@@ -25,6 +30,7 @@ mapping stateen_bit_index : stateen_bit <-> range(0, 63) = {
   STATEEN_CONTEXT <-> 57,
   STATEEN_P1P13   <-> 56,
   STATEEN_SRMCFG  <-> 55,
+  STATEEN_MT      <-> 53,
   STATEEN_FCSR    <-> 1,
 }
 
@@ -39,6 +45,7 @@ bitfield Mstateen0 : bits(64) = {
   P1P13   : 56,
   SRMCFG  : 55,
   CTR     : 54,
+  MT      : 53, // Zimt (placeholder position, see stateen_bit_index)
 
   JVT     : 2,
   FCSR    : 1,
@@ -63,6 +70,8 @@ function legalize_mstateen0(m : Mstateen0, v : bits(64)) -> Mstateen0 = {
     CONTEXT = legalize_csr_bit(mstateen0_context, currentlyEnabled(Ext_Sdtrig) & (sdtrig_has_scontext | sdtrig_has_hcontext), v[CONTEXT]),
     P1P13   = legalize_csr_bit(mstateen0_p1p13, delegh_csrs_are_defined & currentlyEnabled(Ext_H) & xlen == 32, v[P1P13]),
     SRMCFG  = legalize_csr_bit(mstateen0_srmcfg, currentlyEnabled(Ext_Ssqosid), v[SRMCFG]),
+    // The S-level Zimt and Svatag CSRs exist with S-mode.
+    MT      = legalize_csr_bit(mstateen0_mt, currentlyEnabled(Ext_Zimt) & currentlyEnabled(Ext_S), v[MT]),
     FCSR    = legalize_csr_bit(mstateen0_fcsr, hartSupports(Ext_Zfinx) & (misa[F] == 0b0), v[FCSR]),
     C       = legalize_csr_bit(mstateen0_c, true, v[C]),
   ];
@@ -101,6 +110,7 @@ bitfield Hstateen0 : bits(64) = {
   IMSIC   : 58,
   CONTEXT : 57,
   CTR     : 54,
+  MT      : 53, // Zimt (placeholder position, see stateen_bit_index)
 
   JVT     : 2,
   FCSR    : 1,
@@ -137,6 +147,7 @@ function legalize_hstateen0(h : Hstateen0, v : bits(64)) -> Hstateen0 = {
     ENVCFG  = legalize_csr_bit(hstateen0_envcfg, true, v[ENVCFG]),
     CSRIND  = legalize_csr_bit(hstateen0_csrind, currentlyEnabled(Ext_Sscsrind), v[CSRIND]),
     CONTEXT = legalize_csr_bit(hstateen0_context, currentlyEnabled(Ext_Sdtrig) & sdtrig_has_scontext, v[CONTEXT]),
+    MT      = legalize_csr_bit(hstateen0_mt, currentlyEnabled(Ext_Zimt), v[MT]),
     FCSR    = legalize_csr_bit(hstateen0_fcsr, hartSupports(Ext_Zfinx) & (misa[F] == 0b0), v[FCSR]),
     C       = legalize_csr_bit(hstateen0_c, true, v[C]),
   ];

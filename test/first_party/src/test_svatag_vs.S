@@ -13,6 +13,9 @@
 #define CSR_VSVITTS 0x6C2
 #define CSR_VSVITTU 0x6C3
 
+// mstateen0.MT and hstateen0.MT: bit 53 is a PLACEHOLDER as well.
+#define STATEEN0_MT (1 << 53)
+
 #define SVITTS_BASE  0x80001000
 #define SVITTU_BASE  0x80002000
 #define VSVITTS_BASE 0x80003000
@@ -41,6 +44,12 @@ main:
   csrw CSR_VSVITTS, t0
   li t0, VSVITTU_BASE
   csrw CSR_VSVITTU, t0
+
+  // Allow the VS-mode access to svitts and svittu: mstateen0.MT and
+  // hstateen0.MT (bit 53, a PLACEHOLDER position) both 1.
+  li t0, STATEEN0_MT
+  csrs CSR_MSTATEEN0, t0
+  csrs CSR_HSTATEEN0, t0
 
   // Enter VS-mode (MPP = S, MPV = 1) at guest; it ends with an ecall to M-mode.
   li t0, MSTATUS_MPP

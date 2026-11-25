@@ -77,10 +77,11 @@ register zimt_code_exempt : bool = false
 // hypervisor/VS 0x6C0+) and MUST be updated once the memory tagging
 // TG obtains allocations.
 //
-// TODO: Smstateen/Ssstateen gating of the U/VU-controlling CSRs via
-// mstateen0.MT / hstateen0.MT is NOT implemented: the spec carries an
-// explicit warning that the MT bit position in [mh]stateen0 is not
-// fixed yet.
+// The S-level and H-level CSRs below (senvmtagexclude*, henvmtagexclude*,
+// svitts, svittu, vsvitts and vsvittu) are gated by mstateen0.MT and
+// hstateen0.MT ("Accessibility of Zimt CSRs", "Accessibility of Svatag
+// CSRs"): see stateen_access_checks.sail, which lists these addresses too.
+// The position of the MT bit is a placeholder as well (stateen_regs.sail).
 
 // ---------------------------------------------------------------------
 // Tag-generation exclusion mask CSR pairs.

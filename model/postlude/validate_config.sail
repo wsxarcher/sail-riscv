@@ -1102,6 +1102,10 @@ private function check_misc_extension_dependencies() -> bool = {
   valid
 }
 
+// Whether the configuration supports Zimt, which is RV64-only, whether or
+// not experimental extensions are enabled.
+private function zimt_configured() -> bool = (config extensions.Zimt.supported : bool) & xlen == 64
+
 private function check_extension_param_constraints() -> bool = {
   var valid : bool = true;
   if (config extensions.Zic64b.supported : bool) & (plat_cache_block_size_exp != 6) then {
@@ -1135,7 +1139,7 @@ private function check_extension_param_constraints() -> bool = {
       valid = false;
       print_endline("Bit 11 (Environment call from M-mode) in `base.medeleg.delegatable_bits` is set; this environment call cannot be delegated.");
     };
-    if medelegation[Software_Check] != 0b0 & priv_isa_version < Privileged_ISA_1_13 & not(config extensions.Zicfiss.supported : bool) & not(config extensions.Zicfilp.supported : bool) & not(hartSupports(Ext_Zimt)) then {
+    if medelegation[Software_Check] != 0b0 & priv_isa_version < Privileged_ISA_1_13 & not(config extensions.Zicfiss.supported : bool) & not(config extensions.Zicfilp.supported : bool) & not(zimt_configured()) then {
       valid = false;
       print_endline("Bit 18 (Software Check) in `base.medeleg.delegatable_bits` is set, but the software-check exception requires privileged ISA version 1.13 or later, or Zicfilp, Zicfiss or Zimt support.");
     };
@@ -1240,7 +1244,8 @@ private function check_stateen_config() -> bool = {
   if hartSupports(Ext_Smstateen) &
      ((hstateen0_envcfg == CSRBit_ReadOnlyOne & mstateen0_envcfg != CSRBit_ReadOnlyOne) | (hstateen0_context == CSRBit_ReadOnlyOne & mstateen0_context != CSRBit_ReadOnlyOne) |
       (hstateen0_fcsr == CSRBit_ReadOnlyOne & mstateen0_fcsr != CSRBit_ReadOnlyOne) | (hstateen0_c == CSRBit_ReadOnlyOne & mstateen0_c != CSRBit_ReadOnlyOne) |
-      (hstateen0_csrind == CSRBit_ReadOnlyOne & mstateen0_csrind != CSRBit_ReadOnlyOne)) then {
+      (hstateen0_csrind == CSRBit_ReadOnlyOne & mstateen0_csrind != CSRBit_ReadOnlyOne) |
+      (hstateen0_mt == CSRBit_ReadOnlyOne & mstateen0_mt != CSRBit_ReadOnlyOne)) then {
     valid = false;
     print_endline("Stateen hstateen0 has a read-only one bit that is not read-only one in mstateen0.");
   };
@@ -1256,11 +1261,15 @@ private function check_stateen_config() -> bool = {
     valid = check_stateen_bit_feature("mstateen0.CONTEXT", mstateen0_context, hartSupports(Ext_Sdtrig) & (sdtrig_has_scontext | sdtrig_has_hcontext)) & valid;
     valid = check_stateen_bit_feature("mstateen0.P1P13",   mstateen0_p1p13,   delegh_csrs_are_defined & hartSupports(Ext_H) & xlen == 32) & valid;
     valid = check_stateen_bit_feature("mstateen0.SRMCFG",  mstateen0_srmcfg,  hartSupports(Ext_Ssqosid)) & valid;
+    // Zimt is experimental: hartSupports(Ext_Zimt) is false without --enable-experimental-extensions, which must not
+    // make a configuration that supports it invalid.
+    valid = check_stateen_bit_feature("mstateen0.MT",      mstateen0_mt,      zimt_configured() & hartSupports(Ext_S)) & valid;
     valid = check_stateen_bit_feature("mstateen0.FCSR",    mstateen0_fcsr,    hartSupports(Ext_Zfinx)) & valid;
   };
   if hartSupports(Ext_H) then {
     valid = check_stateen_bit_feature("hstateen0.CSRIND",  hstateen0_csrind,  (hartSupports(Ext_Sscsrind) | hartSupports(Ext_Smcsrind)) & hartSupports(Ext_S)) & valid;
     valid = check_stateen_bit_feature("hstateen0.CONTEXT", hstateen0_context, hartSupports(Ext_Sdtrig) & sdtrig_has_scontext) & valid;
+    valid = check_stateen_bit_feature("hstateen0.MT",      hstateen0_mt,      zimt_configured()) & valid;
     valid = check_stateen_bit_feature("hstateen0.FCSR",    hstateen0_fcsr,    hartSupports(Ext_Zfinx)) & valid;
   };
   if hartSupports(Ext_S) then

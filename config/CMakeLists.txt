@@ -52,6 +52,8 @@ foreach(CONFIG__BASE__XLEN IN ITEMS 32 64)
                 set(CONFIG__SDTRIG__MHVALUE__LEN 6)
                 set(CONFIG__SDTRIG__SVALUE__LEN 16)
                 set(CONFIG__STATEEN__P1P13 CSRBit_Writable)
+                # Zimt is RV64-only.
+                set(CONFIG__STATEEN__MT CSRBit_ReadOnlyZero)
             elseif(CONFIG_XLEN_IS_64 STREQUAL true)
                 set(CONFIG__PHYSADDR__BITS 56)
                 set(CONFIG__ASID__LEN 16)
@@ -60,6 +62,7 @@ foreach(CONFIG__BASE__XLEN IN ITEMS 32 64)
                 set(CONFIG__SDTRIG__SVALUE__LEN 32)
                 # P1P13 only exists on RV32.
                 set(CONFIG__STATEEN__P1P13 CSRBit_ReadOnlyZero)
+                set(CONFIG__STATEEN__MT CSRBit_Writable)
             endif()
 
             # GEILEN is at most XLEN-1.

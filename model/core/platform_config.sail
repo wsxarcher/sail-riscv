@@ -131,6 +131,7 @@ let mstateen0_csrind  : CSRBitConfig = config extensions.Stateen.mstateen0.CSRIN
 let mstateen0_context : CSRBitConfig = config extensions.Stateen.mstateen0.CONTEXT
 let mstateen0_p1p13   : CSRBitConfig = config extensions.Stateen.mstateen0.P1P13
 let mstateen0_srmcfg  : CSRBitConfig = config extensions.Stateen.mstateen0.SRMCFG
+let mstateen0_mt      : CSRBitConfig = config extensions.Stateen.mstateen0.MT
 let mstateen0_fcsr    : CSRBitConfig = config extensions.Stateen.mstateen0.FCSR
 let mstateen0_c       : CSRBitConfig = config extensions.Stateen.mstateen0.C
 
@@ -141,6 +142,7 @@ let mstateen3_se3     : CSRBitConfig = config extensions.Stateen.mstateen3.SE3
 let hstateen0_envcfg  : CSRBitConfig = config extensions.Stateen.hstateen0.ENVCFG
 let hstateen0_csrind  : CSRBitConfig = config extensions.Stateen.hstateen0.CSRIND
 let hstateen0_context : CSRBitConfig = config extensions.Stateen.hstateen0.CONTEXT
+let hstateen0_mt      : CSRBitConfig = config extensions.Stateen.hstateen0.MT
 let hstateen0_fcsr    : CSRBitConfig = config extensions.Stateen.hstateen0.FCSR
 let hstateen0_c       : CSRBitConfig = config extensions.Stateen.hstateen0.C
 
